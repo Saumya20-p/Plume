@@ -1,0 +1,926 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A00000000000000000000005 /* Numerics in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000003 /* Numerics */; };
+		A00000000000000000000006 /* MLXUtilsLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000004 /* MLXUtilsLibrary */; };
+		B9D524153029AF47001DFA07 /* PlumeShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B9D5240B3029AF47001DFA07 /* PlumeShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B9F04C113029CC67004BBF23 /* KokoroSwift in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C103029CC67004BBF23 /* KokoroSwift */; };
+		B9F04C143029CD23004BBF23 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C133029CD23004BBF23 /* MLX */; };
+		B9F04C163029CD23004BBF23 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C153029CD23004BBF23 /* MLXFFT */; };
+		B9F04C183029CD23004BBF23 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C173029CD23004BBF23 /* MLXFast */; };
+		B9F04C1A3029CD23004BBF23 /* MLXLinalg in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C193029CD23004BBF23 /* MLXLinalg */; };
+		B9F04C1C3029CD23004BBF23 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C1B3029CD23004BBF23 /* MLXNN */; };
+		B9F04C1E3029CD23004BBF23 /* MLXOptimizers in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C1D3029CD23004BBF23 /* MLXOptimizers */; };
+		B9F04C203029CD23004BBF23 /* MLXRandom in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C1F3029CD23004BBF23 /* MLXRandom */; };
+		B9F04C233029CD49004BBF23 /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C223029CD49004BBF23 /* SwiftSoup */; };
+		B9F04C243029CDFB004BBF23 /* KokoroSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C103029CC67004BBF23 /* KokoroSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B962CF373029A0DD002DBEA1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B962CF213029A0DC002DBEA1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B962CF283029A0DC002DBEA1;
+			remoteInfo = Plume;
+		};
+		B962CF413029A0DD002DBEA1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B962CF213029A0DC002DBEA1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B962CF283029A0DC002DBEA1;
+			remoteInfo = Plume;
+		};
+		B9D524133029AF47001DFA07 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B962CF213029A0DC002DBEA1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B9D5240A3029AF47001DFA07;
+			remoteInfo = PlumeShare;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B9D524163029AF47001DFA07 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				B9D524153029AF47001DFA07 /* PlumeShare.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B9D5246D3029C8A3001DFA07 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				B9F04C243029CDFB004BBF23 /* KokoroSwift in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		B962CF293029A0DC002DBEA1 /* Plume.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Plume.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B962CF363029A0DD002DBEA1 /* PlumeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PlumeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B962CF403029A0DD002DBEA1 /* PlumeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PlumeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B9D5240B3029AF47001DFA07 /* PlumeShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PlumeShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		B962CF633029A3D0002DBEA1 /* Exceptions for "Plume" folder in "Plume" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = B962CF283029A0DC002DBEA1 /* Plume */;
+		};
+		B9D5241A3029AF47001DFA07 /* Exceptions for "PlumeShare" folder in "PlumeShare" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = B9D5240A3029AF47001DFA07 /* PlumeShare */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		B962CF2B3029A0DC002DBEA1 /* Plume */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				B962CF633029A3D0002DBEA1 /* Exceptions for "Plume" folder in "Plume" target */,
+			);
+			path = Plume;
+			sourceTree = "<group>";
+		};
+		B962CF393029A0DD002DBEA1 /* PlumeTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PlumeTests;
+			sourceTree = "<group>";
+		};
+		B962CF433029A0DD002DBEA1 /* PlumeUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PlumeUITests;
+			sourceTree = "<group>";
+		};
+		B9D5240C3029AF47001DFA07 /* PlumeShare */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				B9D5241A3029AF47001DFA07 /* Exceptions for "PlumeShare" folder in "PlumeShare" target */,
+			);
+			path = PlumeShare;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		B962CF263029A0DC002DBEA1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B9F04C1C3029CD23004BBF23 /* MLXNN in Frameworks */,
+				B9F04C1A3029CD23004BBF23 /* MLXLinalg in Frameworks */,
+				B9F04C143029CD23004BBF23 /* MLX in Frameworks */,
+				B9F04C203029CD23004BBF23 /* MLXRandom in Frameworks */,
+				B9F04C113029CC67004BBF23 /* KokoroSwift in Frameworks */,
+				B9F04C1E3029CD23004BBF23 /* MLXOptimizers in Frameworks */,
+				B9F04C183029CD23004BBF23 /* MLXFast in Frameworks */,
+				B9F04C163029CD23004BBF23 /* MLXFFT in Frameworks */,
+				B9F04C233029CD49004BBF23 /* SwiftSoup in Frameworks */,
+				A00000000000000000000005 /* Numerics in Frameworks */,
+				A00000000000000000000006 /* MLXUtilsLibrary in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B962CF333029A0DD002DBEA1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B962CF3D3029A0DD002DBEA1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B9D524083029AF47001DFA07 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		B962CF203029A0DC002DBEA1 = {
+			isa = PBXGroup;
+			children = (
+				B962CF2B3029A0DC002DBEA1 /* Plume */,
+				B962CF393029A0DD002DBEA1 /* PlumeTests */,
+				B962CF433029A0DD002DBEA1 /* PlumeUITests */,
+				B9D5240C3029AF47001DFA07 /* PlumeShare */,
+				B9D524653029C6D6001DFA07 /* Frameworks */,
+				B962CF2A3029A0DC002DBEA1 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		B962CF2A3029A0DC002DBEA1 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B962CF293029A0DC002DBEA1 /* Plume.app */,
+				B962CF363029A0DD002DBEA1 /* PlumeTests.xctest */,
+				B962CF403029A0DD002DBEA1 /* PlumeUITests.xctest */,
+				B9D5240B3029AF47001DFA07 /* PlumeShare.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B9D524653029C6D6001DFA07 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		B962CF283029A0DC002DBEA1 /* Plume */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B962CF4A3029A0DD002DBEA1 /* Build configuration list for PBXNativeTarget "Plume" */;
+			buildPhases = (
+				B962CF253029A0DC002DBEA1 /* Sources */,
+				B962CF263029A0DC002DBEA1 /* Frameworks */,
+				B962CF273029A0DC002DBEA1 /* Resources */,
+				B9D524163029AF47001DFA07 /* Embed Foundation Extensions */,
+				B9D5246D3029C8A3001DFA07 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B9D524143029AF47001DFA07 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B962CF2B3029A0DC002DBEA1 /* Plume */,
+			);
+			name = Plume;
+			packageProductDependencies = (
+				B9F04C103029CC67004BBF23 /* KokoroSwift */,
+				B9F04C133029CD23004BBF23 /* MLX */,
+				B9F04C153029CD23004BBF23 /* MLXFFT */,
+				B9F04C173029CD23004BBF23 /* MLXFast */,
+				B9F04C193029CD23004BBF23 /* MLXLinalg */,
+				B9F04C1B3029CD23004BBF23 /* MLXNN */,
+				B9F04C1D3029CD23004BBF23 /* MLXOptimizers */,
+				B9F04C1F3029CD23004BBF23 /* MLXRandom */,
+				B9F04C223029CD49004BBF23 /* SwiftSoup */,
+				A00000000000000000000003 /* Numerics */,
+				A00000000000000000000004 /* MLXUtilsLibrary */,
+			);
+			productName = Plume;
+			productReference = B962CF293029A0DC002DBEA1 /* Plume.app */;
+			productType = "com.apple.product-type.application";
+		};
+		B962CF353029A0DD002DBEA1 /* PlumeTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B962CF4D3029A0DD002DBEA1 /* Build configuration list for PBXNativeTarget "PlumeTests" */;
+			buildPhases = (
+				B962CF323029A0DD002DBEA1 /* Sources */,
+				B962CF333029A0DD002DBEA1 /* Frameworks */,
+				B962CF343029A0DD002DBEA1 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B962CF383029A0DD002DBEA1 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B962CF393029A0DD002DBEA1 /* PlumeTests */,
+			);
+			name = PlumeTests;
+			packageProductDependencies = (
+			);
+			productName = PlumeTests;
+			productReference = B962CF363029A0DD002DBEA1 /* PlumeTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		B962CF3F3029A0DD002DBEA1 /* PlumeUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B962CF503029A0DD002DBEA1 /* Build configuration list for PBXNativeTarget "PlumeUITests" */;
+			buildPhases = (
+				B962CF3C3029A0DD002DBEA1 /* Sources */,
+				B962CF3D3029A0DD002DBEA1 /* Frameworks */,
+				B962CF3E3029A0DD002DBEA1 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B962CF423029A0DD002DBEA1 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B962CF433029A0DD002DBEA1 /* PlumeUITests */,
+			);
+			name = PlumeUITests;
+			packageProductDependencies = (
+			);
+			productName = PlumeUITests;
+			productReference = B962CF403029A0DD002DBEA1 /* PlumeUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		B9D5240A3029AF47001DFA07 /* PlumeShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B9D524193029AF47001DFA07 /* Build configuration list for PBXNativeTarget "PlumeShare" */;
+			buildPhases = (
+				A00000000000000000000007 /* Sources */,
+				B9D524083029AF47001DFA07 /* Frameworks */,
+				A00000000000000000000008 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				B9D5240C3029AF47001DFA07 /* PlumeShare */,
+			);
+			name = PlumeShare;
+			packageProductDependencies = (
+			);
+			productName = PlumeShare;
+			productReference = B9D5240B3029AF47001DFA07 /* PlumeShare.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		B962CF213029A0DC002DBEA1 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					B962CF283029A0DC002DBEA1 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					B962CF353029A0DD002DBEA1 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = B962CF283029A0DC002DBEA1;
+					};
+					B962CF3F3029A0DD002DBEA1 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = B962CF283029A0DC002DBEA1;
+					};
+					B9D5240A3029AF47001DFA07 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+				};
+			};
+			buildConfigurationList = B962CF243029A0DC002DBEA1 /* Build configuration list for PBXProject "Plume" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = B962CF203029A0DC002DBEA1;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				B9F04C0F3029CC67004BBF23 /* XCRemoteSwiftPackageReference "kokoro-ios" */,
+				B9F04C123029CD23004BBF23 /* XCRemoteSwiftPackageReference "mlx-swift" */,
+				B9F04C213029CD49004BBF23 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
+				A00000000000000000000001 /* XCRemoteSwiftPackageReference "swift-numerics" */,
+				A00000000000000000000002 /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = B962CF2A3029A0DC002DBEA1 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B962CF283029A0DC002DBEA1 /* Plume */,
+				B962CF353029A0DD002DBEA1 /* PlumeTests */,
+				B962CF3F3029A0DD002DBEA1 /* PlumeUITests */,
+				B9D5240A3029AF47001DFA07 /* PlumeShare */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A00000000000000000000008 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B962CF273029A0DC002DBEA1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B962CF343029A0DD002DBEA1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B962CF3E3029A0DD002DBEA1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A00000000000000000000007 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B962CF253029A0DC002DBEA1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B962CF323029A0DD002DBEA1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B962CF3C3029A0DD002DBEA1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B962CF383029A0DD002DBEA1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B962CF283029A0DC002DBEA1 /* Plume */;
+			targetProxy = B962CF373029A0DD002DBEA1 /* PBXContainerItemProxy */;
+		};
+		B962CF423029A0DD002DBEA1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B962CF283029A0DC002DBEA1 /* Plume */;
+			targetProxy = B962CF413029A0DD002DBEA1 /* PBXContainerItemProxy */;
+		};
+		B9D524143029AF47001DFA07 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B9D5240A3029AF47001DFA07 /* PlumeShare */;
+			targetProxy = B9D524133029AF47001DFA07 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		B962CF483029A0DD002DBEA1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 2334XND6U2;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		B962CF493029A0DD002DBEA1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 2334XND6U2;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		B962CF4B3029A0DD002DBEA1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Plume/Plume.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2334XND6U2;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Plume/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = saumyapatel.Plume;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B962CF4C3029A0DD002DBEA1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Plume/Plume.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2334XND6U2;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Plume/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = saumyapatel.Plume;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		B962CF4E3029A0DD002DBEA1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2334XND6U2;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = saumyapatel.PlumeTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Plume.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Plume";
+			};
+			name = Debug;
+		};
+		B962CF4F3029A0DD002DBEA1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2334XND6U2;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = saumyapatel.PlumeTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Plume.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Plume";
+			};
+			name = Release;
+		};
+		B962CF513029A0DD002DBEA1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2334XND6U2;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = saumyapatel.PlumeUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Plume;
+			};
+			name = Debug;
+		};
+		B962CF523029A0DD002DBEA1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2334XND6U2;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = saumyapatel.PlumeUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Plume;
+			};
+			name = Release;
+		};
+		B9D524173029AF47001DFA07 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PlumeShare/PlumeShare.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2334XND6U2;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PlumeShare/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PlumeShare;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = saumyapatel.Plume.PlumeShare;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B9D524183029AF47001DFA07 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PlumeShare/PlumeShare.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2334XND6U2;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PlumeShare/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PlumeShare;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = saumyapatel.Plume.PlumeShare;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		B962CF243029A0DC002DBEA1 /* Build configuration list for PBXProject "Plume" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B962CF483029A0DD002DBEA1 /* Debug */,
+				B962CF493029A0DD002DBEA1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B962CF4A3029A0DD002DBEA1 /* Build configuration list for PBXNativeTarget "Plume" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B962CF4B3029A0DD002DBEA1 /* Debug */,
+				B962CF4C3029A0DD002DBEA1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B962CF4D3029A0DD002DBEA1 /* Build configuration list for PBXNativeTarget "PlumeTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B962CF4E3029A0DD002DBEA1 /* Debug */,
+				B962CF4F3029A0DD002DBEA1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B962CF503029A0DD002DBEA1 /* Build configuration list for PBXNativeTarget "PlumeUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B962CF513029A0DD002DBEA1 /* Debug */,
+				B962CF523029A0DD002DBEA1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B9D524193029AF47001DFA07 /* Build configuration list for PBXNativeTarget "PlumeShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B9D524173029AF47001DFA07 /* Debug */,
+				B9D524183029AF47001DFA07 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A00000000000000000000001 /* XCRemoteSwiftPackageReference "swift-numerics" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-numerics.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.0;
+			};
+		};
+		A00000000000000000000002 /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mlalma/MLXUtilsLibrary.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.0.6;
+			};
+		};
+		B9F04C0F3029CC67004BBF23 /* XCRemoteSwiftPackageReference "kokoro-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mlalma/kokoro-ios.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.11;
+			};
+		};
+		B9F04C123029CD23004BBF23 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift";
+			requirement = {
+				kind = exactVersion;
+				version = 0.30.2;
+			};
+		};
+		B9F04C213029CD49004BBF23 /* XCRemoteSwiftPackageReference "SwiftSoup" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/scinfu/SwiftSoup.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.13.7;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A00000000000000000000003 /* Numerics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A00000000000000000000001 /* XCRemoteSwiftPackageReference "swift-numerics" */;
+			productName = Numerics;
+		};
+		A00000000000000000000004 /* MLXUtilsLibrary */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A00000000000000000000002 /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */;
+			productName = MLXUtilsLibrary;
+		};
+		B9F04C103029CC67004BBF23 /* KokoroSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B9F04C0F3029CC67004BBF23 /* XCRemoteSwiftPackageReference "kokoro-ios" */;
+			productName = KokoroSwift;
+		};
+		B9F04C133029CD23004BBF23 /* MLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B9F04C123029CD23004BBF23 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLX;
+		};
+		B9F04C153029CD23004BBF23 /* MLXFFT */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B9F04C123029CD23004BBF23 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXFFT;
+		};
+		B9F04C173029CD23004BBF23 /* MLXFast */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B9F04C123029CD23004BBF23 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXFast;
+		};
+		B9F04C193029CD23004BBF23 /* MLXLinalg */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B9F04C123029CD23004BBF23 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXLinalg;
+		};
+		B9F04C1B3029CD23004BBF23 /* MLXNN */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B9F04C123029CD23004BBF23 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXNN;
+		};
+		B9F04C1D3029CD23004BBF23 /* MLXOptimizers */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B9F04C123029CD23004BBF23 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXOptimizers;
+		};
+		B9F04C1F3029CD23004BBF23 /* MLXRandom */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B9F04C123029CD23004BBF23 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXRandom;
+		};
+		B9F04C223029CD49004BBF23 /* SwiftSoup */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B9F04C213029CD49004BBF23 /* XCRemoteSwiftPackageReference "SwiftSoup" */;
+			productName = SwiftSoup;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = B962CF213029A0DC002DBEA1 /* Project object */;
+}

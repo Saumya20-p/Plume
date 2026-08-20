@@ -1,0 +1,51 @@
+# Xcode
+xcuserdata/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# Swift Package Manager
+.build/
+.spm/
+
+# Model Weights
+*.safetensors
+*.npz
+
+# Generated/Audio
+AudioCache/
+*.caf
+*.wav
+
+# Node
+node_modules/
+package-lock.json
+
+# macOS
+.DS_Store
+
+# Reference Clones
+KokoroTestApp/
+kokoro-ios-repo/
+
+# Test / Scratch files
+test_*.swift
+test_bundle
+test_race*
+test_avqueue*.swift
+update_kokoro.swift
+
+# Logs and archives
+build.log
+build_log.txt
+test_output.log
+*.tar.gz
+*.zip
+test_injector.sh
+
+# One-off agent patching scripts
+modify_audio.py
+modify_generation.py
+modify_kokoro.py
+patch_kokoro.sh
