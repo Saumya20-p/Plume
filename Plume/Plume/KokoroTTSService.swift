@@ -18,6 +18,7 @@ import NaturalLanguage
 
 final class EngineBackgroundState: @unchecked Sendable {
     private let lock = NSLock()
+    private let condition = NSCondition()
     nonisolated(unsafe) private var paused = false
     nonisolated(unsafe) private var executing = false
     nonisolated init() {}
@@ -44,7 +45,19 @@ final class EngineBackgroundState: @unchecked Sendable {
     nonisolated func stopExecuting() {
         lock.lock()
         executing = false
+        condition.broadcast()
         lock.unlock()
+    }
+
+    nonisolated func waitForIdle(timeoutSeconds: TimeInterval) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let limit = Date().addingTimeInterval(timeoutSeconds)
+        while executing {
+            if Date() > limit { return false }
+            condition.wait(until: limit) 
+        }
+        return true
     }
 }
 
@@ -107,15 +120,16 @@ actor KokoroEngineActor {
         fullText: String,
         currentTimeOffset: TimeInterval,
         format: AVAudioFormat,
-        settings: [String: Any]
+        settings: [String: Any],
+        destinationURL: URL
     ) async throws -> AudioChunk {
         
         let trimmedText = chunkText.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("m4a")
         
         if trimmedText.isEmpty {
-            return AudioChunk(fileURL: tempURL, duration: 0, timestamps: [])
+            return AudioChunk(fileURL: destinationURL, duration: 0, timestamps: [])
         }
         
         let trimmedRange = chunkText.range(of: trimmedText)!
@@ -180,8 +194,8 @@ actor KokoroEngineActor {
                         
                         chunkTimestamps.append(WordTimestamp(
                             word: token.text,
-                            startTime: currentTimeOffset + start,
-                            endTime: currentTimeOffset + end,
+                            startTime: start,
+                            endTime: end,
                             rangeLocation: nsRange.location,
                             rangeLength: nsRange.length
                         ))
@@ -227,16 +241,22 @@ actor KokoroEngineActor {
                 UnsafeMutableRawPointer(channels[0]).copyMemory(from: UnsafeRawPointer(baseAddress), byteCount: ptr.count * MemoryLayout<Float>.stride)
             }
             
-            let audioFile = try AVAudioFile(forWriting: tempURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
-            try audioFile.write(from: buffer)
+            var audioFile: AVAudioFile? = try AVAudioFile(forWriting: tempURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+            try audioFile?.write(from: buffer)
             
             let sampleRate = Double(KokoroTTS.Constants.samplingRate)
             chunkDuration = TimeInterval(trimmedFloats.count) / sampleRate
             
+            audioFile = nil
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                try? FileManager.default.removeItem(at: destinationURL)
+            }
+            try FileManager.default.moveItem(at: tempURL, to: destinationURL)
+            
             MLX.Memory.clearCache()
         }
         
-        return AudioChunk(fileURL: tempURL, duration: chunkDuration, timestamps: chunkTimestamps)
+        return AudioChunk(fileURL: destinationURL, duration: chunkDuration, timestamps: chunkTimestamps)
     }
     func synthesizeToFile(text: String, fileURL: URL, progress: @Sendable (Int, Int) -> Void) async throws -> [WordTimestamp] {
         isCancelled = false
@@ -434,95 +454,22 @@ actor KokoroEngineActor {
 }
 
 public class AudioChunkGenerator {
+    private let document: Document
     private let text: String
     private let engineActor: KokoroEngineActor
-    private var chunks: [(text: String, range: Range<String.Index>)] = []
+    private var chunks: [TextSegmenter.Chunk] = []
     private var currentIndex: Int = 0
     private var currentTimeOffset: TimeInterval = 0
     private let format: AVAudioFormat
     private let settings: [String: Any]
     
-    init(text: String, engineActor: KokoroEngineActor) throws {
-        self.text = text
+    init(document: Document, engineActor: KokoroEngineActor, startChunkIndex: Int) throws {
+        self.document = document
+        self.text = document.bodyText
         self.engineActor = engineActor
         
-        let tokenizer = NLTokenizer(unit: .sentence)
-        tokenizer.string = text
-        
-        var sentences: [(String, Range<String.Index>)] = []
-        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { tokenRange, _ in
-            sentences.append((String(text[tokenRange]), tokenRange))
-            return true
-        }
-        
-        if sentences.isEmpty {
-            sentences = [(text, text.startIndex..<text.endIndex)]
-        }
-        
-        var localChunks: [(text: String, range: Range<String.Index>)] = []
-        var currentChunkStart: String.Index?
-        var currentChunkEnd: String.Index?
-        var currentChunkLength = 0
-        
-        func appendCurrentChunk() {
-            if let start = currentChunkStart, let end = currentChunkEnd, start < end {
-                let range = start..<end
-                localChunks.append((String(text[range]), range))
-            }
-            currentChunkStart = nil
-            currentChunkEnd = nil
-            currentChunkLength = 0
-        }
-        
-        var isFirstChunk = true
-        
-        for (sentenceText, sentenceRange) in sentences {
-            let currentLimit = isFirstChunk ? 100 : 350
-            
-            if sentenceText.count > currentLimit {
-                appendCurrentChunk()
-                
-                var scanStart = sentenceRange.lowerBound
-                while scanStart < sentenceRange.upperBound {
-                    let activeLimit = isFirstChunk ? 100 : 350
-                    let remaining = text.distance(from: scanStart, to: sentenceRange.upperBound)
-                    let chunkLen = min(remaining, activeLimit)
-                    let idealEnd = text.index(scanStart, offsetBy: chunkLen)
-                    
-                    var splitEnd = idealEnd
-                    if chunkLen == activeLimit {
-                        var tempEnd = idealEnd
-                        while tempEnd > scanStart, text[tempEnd] != " ", text[tempEnd] != "\n" {
-                            tempEnd = text.index(before: tempEnd)
-                        }
-                        if tempEnd > scanStart {
-                            splitEnd = tempEnd
-                        }
-                    }
-                    
-                    let range = scanStart..<splitEnd
-                    localChunks.append((String(text[range]), range))
-                    isFirstChunk = false
-                    
-                    scanStart = splitEnd
-                    if scanStart < sentenceRange.upperBound, text[scanStart] == " " || text[scanStart] == "\n" {
-                        scanStart = text.index(after: scanStart)
-                    }
-                }
-                continue
-            }
-            
-            if currentChunkLength + sentenceText.count > currentLimit && currentChunkLength > 0 {
-                appendCurrentChunk()
-                isFirstChunk = false
-            }
-            
-            if currentChunkStart == nil { currentChunkStart = sentenceRange.lowerBound }
-            currentChunkEnd = sentenceRange.upperBound
-            currentChunkLength += sentenceText.count
-        }
-        appendCurrentChunk()
-        self.chunks = localChunks
+        self.chunks = TextSegmenter.segment(text: self.text)
+        self.currentIndex = startChunkIndex
         
         let sampleRate = Double(KokoroTTS.Constants.samplingRate)
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else {
@@ -530,19 +477,17 @@ public class AudioChunkGenerator {
         }
         self.format = format
         self.settings = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: sampleRate,
             AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 32,
-            AVLinearPCMIsFloatKey: true,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false
+            AVEncoderBitRateKey: 64000
         ]
     }
     
     public func nextChunk() async throws -> AudioChunk? {
         if currentIndex >= chunks.count { return nil }
         let chunk = chunks[currentIndex]
+        let indexForChunk = currentIndex
         currentIndex += 1
         
         guard !chunk.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -555,13 +500,13 @@ public class AudioChunkGenerator {
             fullText: self.text,
             currentTimeOffset: self.currentTimeOffset,
             format: self.format,
-            settings: self.settings
+            settings: self.settings,
+            destinationURL: document.chunkURL(for: indexForChunk)
         )
         
         self.currentTimeOffset += resultChunk.duration
         return resultChunk
     }
-
 }
 
 @MainActor
@@ -581,14 +526,9 @@ class KokoroTTSService: ObservableObject {
     func waitForGPUIdleSync() {
         guard let state = getEngineActorSync()?.backgroundState else { return }
         
-        // Wait until the current chunk finishes generating (with a 3.5s timeout to prevent iOS watchdog kill)
-        let timeout = Date().addingTimeInterval(3.5)
-        while state.isExecuting {
-            if Date() > timeout {
-                Log.tts.error("Warning: MLX evaluation did not finish in time for background transition.")
-                break
-            }
-            Thread.sleep(forTimeInterval: 0.05)
+        let finished = state.waitForIdle(timeoutSeconds: 3.5)
+        if !finished {
+            Log.tts.error("Warning: MLX evaluation did not finish in time for background transition.")
         }
         
         // Now that no new commands are being submitted, drain all in-flight Metal command buffers
@@ -712,7 +652,7 @@ class KokoroTTSService: ObservableObject {
     }
     
 
-    func synthesizeGenerator(document: Document) async throws -> AudioChunkGenerator {
+    func synthesizeGenerator(document: Document, startChunkIndex: Int) async throws -> AudioChunkGenerator {
         if !self.isModelLoaded {
             try await self.loadModel()
         }
@@ -724,7 +664,7 @@ class KokoroTTSService: ObservableObject {
         // Reset cancellation state from any previous session before starting
         await engineActor.setCancelled(false)
         
-        return try AudioChunkGenerator(text: document.bodyText, engineActor: engineActor)
+        return try AudioChunkGenerator(document: document, engineActor: engineActor, startChunkIndex: startChunkIndex)
     }
 
     func playText(_ text: String) async throws {

@@ -18,7 +18,7 @@ public class PlaybackProgress: ObservableObject {
     public static let shared = PlaybackProgress()
     
     @Published public var currentTime: TimeInterval = 0
-    @Published public var currentWordIndex: Int? = nil
+    @Published public var currentWord: WordTimestamp? = nil
     
     private init() {}
 }
@@ -31,12 +31,16 @@ public class AudioPlaybackEngine: ObservableObject {
     private var queuePlayer: AVQueuePlayer?
     
     public var chunks: [PlayedChunk] = []
+    public var virtualBaseOffset: TimeInterval = 0
+    private var seekDebounceTimer: Timer?
     private var timeObserverToken: Any?
     private var endObserverToken: Any?
     private var interruptionObserverToken: Any?
     private var routeChangeObserverToken: Any?
     private var wasPlayingBeforeInterruption: Bool = false
     private var lastProgressSaveTime: TimeInterval = 0
+    private var currentSessionStartTime: TimeInterval?
+    private var currentSeekTask: Task<Void, Never>? = nil
     
     @Published public var basePlaybackSpeed: Float {
         didSet {
@@ -61,9 +65,9 @@ public class AudioPlaybackEngine: ObservableObject {
         set { progress.currentTime = newValue }
     }
     
-    public var currentWordIndex: Int? {
-        get { progress.currentWordIndex }
-        set { progress.currentWordIndex = newValue }
+    public var currentWord: WordTimestamp? {
+        get { progress.currentWord }
+        set { progress.currentWord = newValue }
     }
     
     @Published public var duration: TimeInterval = 0
@@ -103,16 +107,8 @@ public class AudioPlaybackEngine: ObservableObject {
     }
     
     @MainActor
-    public func updateEffectivePlaybackRate(currentWordIndex: Int? = nil) {
-        var bump: Float = 0.0
-        if autoIncreaseSpeedEnabled {
-            let indexToUse = currentWordIndex ?? self.currentWordIndex
-            if let index = indexToUse {
-                bump = floor(Float(index) / 500.0) * 0.1
-            }
-        }
-        
-        let newRate = min(3.0, basePlaybackSpeed + bump)
+    public func updateEffectivePlaybackRate() {
+        let newRate = min(3.0, basePlaybackSpeed)
         if abs(playbackRate - newRate) > 0.01 {
             playbackRate = newRate
         }
@@ -120,13 +116,28 @@ public class AudioPlaybackEngine: ObservableObject {
     
     public func enqueue(chunk: AudioChunk) {
         let exactDuration = chunk.duration
-        let globalStart = chunks.last.map { $0.globalStartTime + $0.duration } ?? 0.0
+        let globalStart = chunks.last.map { $0.globalStartTime + $0.duration } ?? virtualBaseOffset
         let playedChunk = PlayedChunk(url: chunk.fileURL, duration: exactDuration, globalStartTime: globalStart, timestamps: chunk.timestamps)
         chunks.append(playedChunk)
         
         // Gapless enqueue using AVQueuePlayer
         let newItem = AVPlayerItem(url: chunk.fileURL)
         queuePlayer?.insert(newItem, after: nil)
+        
+        if isPlaying && queuePlayer?.timeControlStatus != .playing {
+            Task { @MainActor [weak self, weak newItem] in
+                guard let self = self, let item = newItem else { return }
+                
+                while item.status == .unknown {
+                    if Task.isCancelled { return }
+                    try? await Task.sleep(nanoseconds: 20_000_000) // 20ms
+                }
+                
+                if !Task.isCancelled && self.isPlaying && item.status == .readyToPlay {
+                    self.queuePlayer?.play()
+                }
+            }
+        }
         
         duration += exactDuration
         updateNowPlayingPlaybackInfo()
@@ -156,7 +167,8 @@ public class AudioPlaybackEngine: ObservableObject {
         chunks = []
         currentTime = 0
         duration = 0
-        currentWordIndex = nil
+        virtualBaseOffset = 0
+        currentWord = nil
         
         self.currentDocument = document
         setupNowPlaying()
@@ -166,6 +178,7 @@ public class AudioPlaybackEngine: ObservableObject {
         queuePlayer?.play()
         queuePlayer?.rate = playbackRate
         isPlaying = true
+        currentSessionStartTime = currentTime
         updateNowPlayingPlaybackInfo()
     }
     
@@ -173,6 +186,22 @@ public class AudioPlaybackEngine: ObservableObject {
         queuePlayer?.pause()
         isPlaying = false
         updateNowPlayingPlaybackInfo()
+        
+        if let startTime = currentSessionStartTime {
+            let sessionDuration = currentTime - startTime
+            if sessionDuration > 2.0, let doc = currentDocument, let context = doc.modelContext {
+                let words = Int((sessionDuration / 60.0) * 150.0 * Double(playbackRate))
+                let session = ListeningSession(
+                    documentId: doc.id,
+                    secondsListened: sessionDuration,
+                    wordsListened: words,
+                    playbackSpeed: Double(playbackRate)
+                )
+                context.insert(session)
+                try? context.save()
+            }
+            currentSessionStartTime = nil
+        }
         
         if let doc = currentDocument, duration > 0 {
             doc.progress = currentTime / duration
@@ -189,36 +218,181 @@ public class AudioPlaybackEngine: ObservableObject {
     }
     
     public func seek(to targetTime: TimeInterval) {
-        let targetTime = max(0, min(targetTime, duration))
+        seekDebounceTimer?.invalidate()
+        seekDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.performSeek(to: targetTime)
+            }
+        }
+    }
+
+    private func performSeek(to targetTime: TimeInterval) {
+        guard let doc = currentDocument else { return }
         
-        // Find which chunk this time falls into
-        guard let chunkIndex = chunks.firstIndex(where: { targetTime >= $0.globalStartTime && targetTime < $0.globalStartTime + $0.duration }) ?? chunks.indices.last else { return }
+        let totalDuration = doc.estimatedDuration > 0 ? doc.estimatedDuration : max(duration, 1)
+        let safeTargetTime = max(0, min(targetTime, totalDuration))
         
-        let targetChunk = chunks[chunkIndex]
-        let localTime = targetTime - targetChunk.globalStartTime
+        let currentVirtualStartTime = chunks.first?.globalStartTime ?? virtualBaseOffset
+        let currentVirtualEndTime = chunks.last.map { $0.globalStartTime + $0.duration } ?? virtualBaseOffset
+        if safeTargetTime >= currentVirtualStartTime && safeTargetTime <= currentVirtualEndTime, !chunks.isEmpty {
+            let wasPlaying = isPlaying
+            queuePlayer?.pause()
+            queuePlayer?.removeAllItems()
+            var localSeekTime: TimeInterval = 0
+            var foundStartChunk = false
+            for chunk in chunks {
+                if !foundStartChunk && safeTargetTime >= chunk.globalStartTime && safeTargetTime <= chunk.globalStartTime + chunk.duration {
+                    foundStartChunk = true
+                    localSeekTime = safeTargetTime - chunk.globalStartTime
+                }
+                if foundStartChunk {
+                    queuePlayer?.insert(AVPlayerItem(url: chunk.url), after: nil)
+                }
+            }
+            if let firstItem = queuePlayer?.items().first {
+                currentSeekTask?.cancel()
+                currentSeekTask = Task { @MainActor [weak self, weak firstItem] in
+                    guard let self = self, let firstItem = firstItem else { return }
+                    
+                    // Wait for the item to load (local files load almost instantly)
+                    while firstItem.status == .unknown {
+                        if Task.isCancelled { return }
+                        try? await Task.sleep(nanoseconds: 20_000_000) // 20ms
+                    }
+                    
+                    if Task.isCancelled { return }
+                    if firstItem.status == .readyToPlay {
+                        firstItem.seek(to: CMTime(seconds: localSeekTime, preferredTimescale: 600), completionHandler: nil)
+                        if self.isPlaying {
+                            self.queuePlayer?.play()
+                        }
+                    }
+                }
+            } else {
+                if wasPlaying {
+                    queuePlayer?.play()
+                    self.isPlaying = true
+                }
+            }
+            self.currentTime = safeTargetTime
+            updateNowPlayingPlaybackInfo()
+            return
+        }
         
         let wasPlaying = isPlaying
         queuePlayer?.pause()
         
-        // Rebuild the queue starting from the target chunk
+        // 1. Coordinate with AudioGenerationManager
+        AudioGenerationManager.shared.cancelCurrentGeneration()
+        
+        // 2. Clear items and chunks
         queuePlayer?.removeAllItems()
-        for i in chunkIndex..<chunks.count {
-            let item = AVPlayerItem(url: chunks[i].url)
-            queuePlayer?.insert(item, after: nil)
+        chunks.removeAll()
+        
+        // 3. Set virtualBaseOffset
+        virtualBaseOffset = safeTargetTime
+        self.currentTime = safeTargetTime
+        self.duration = safeTargetTime
+        
+        // 4. Calculate chunk index
+        let segments = TextSegmenter.segment(text: doc.bodyText)
+        var targetChunkIndex = 0
+        if !segments.isEmpty {
+            let progress = safeTargetTime / totalDuration
+            targetChunkIndex = Int(progress * Double(segments.count))
+            targetChunkIndex = max(0, min(targetChunkIndex, segments.count - 1))
         }
         
-        let cmTime = CMTime(seconds: localTime, preferredTimescale: 600)
-        queuePlayer?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-            guard let self = self else { return }
+        // 5. Generate
+        isGenerationActive = true
+        AudioGenerationManager.shared.generate(document: doc, playbackEngine: self, startChunkIndex: targetChunkIndex)
+        
+        updateNowPlayingPlaybackInfo()
+        
+        if wasPlaying {
+            // It will resume automatically when enqueue is called in AudioGenerationManager if isFirst is handled correctly.
+            // But we can also set isPlaying to true so UI knows it's playing
+            self.isPlaying = true
+        }
+    }
+
+    public func seek(toCharIndex charIndex: Int) {
+        seekDebounceTimer?.invalidate()
+        seekDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
             Task { @MainActor in
-                self.currentTime = targetTime
-                self.updateNowPlayingPlaybackInfo()
-                
-                if wasPlaying {
-                    self.queuePlayer?.play()
-                    self.queuePlayer?.rate = self.playbackRate
+                self?.performSeek(toCharIndex: charIndex)
+            }
+        }
+    }
+    
+    private func performSeek(toCharIndex charIndex: Int) {
+        guard let doc = currentDocument else { return }
+        
+        var matchedChunkTime: TimeInterval? = nil
+        for chunk in chunks {
+            for ts in chunk.timestamps {
+                if let loc = ts.rangeLocation, let len = ts.rangeLength {
+                    if charIndex >= loc && charIndex <= (loc + len) {
+                        matchedChunkTime = chunk.globalStartTime + ts.startTime
+                        break
+                    }
                 }
             }
+            if matchedChunkTime != nil { break }
+        }
+        if let time = matchedChunkTime {
+            performSeek(to: time)
+            return
+        }
+        
+        let segments = TextSegmenter.segment(text: doc.bodyText)
+        guard !segments.isEmpty else { return }
+        
+        var targetChunkIndex = segments.count - 1
+        for (index, chunk) in segments.enumerated() {
+            let start = chunk.range.lowerBound.utf16Offset(in: doc.bodyText)
+            let end = chunk.range.upperBound.utf16Offset(in: doc.bodyText)
+            if charIndex < start {
+                targetChunkIndex = max(0, index - 1)
+                break
+            }
+            if charIndex >= start && charIndex <= end {
+                targetChunkIndex = index
+                break
+            }
+        }
+        
+        for chunk in chunks {
+            let filename = chunk.url.deletingPathExtension().lastPathComponent
+            if let indexStr = filename.split(separator: "_").last, let parsedIndex = Int(indexStr) {
+                if parsedIndex == targetChunkIndex {
+                    performSeek(to: chunk.globalStartTime)
+                    return
+                }
+            }
+        }
+        
+        let totalDuration = doc.estimatedDuration > 0 ? doc.estimatedDuration : max(duration, 1)
+        let safeTargetTime = totalDuration * (Double(targetChunkIndex) / Double(segments.count))
+        
+        let wasPlaying = isPlaying
+        queuePlayer?.pause()
+        
+        AudioGenerationManager.shared.cancelCurrentGeneration()
+        queuePlayer?.removeAllItems()
+        chunks.removeAll()
+        
+        virtualBaseOffset = safeTargetTime
+        self.currentTime = safeTargetTime
+        self.duration = safeTargetTime
+        
+        isGenerationActive = true
+        AudioGenerationManager.shared.generate(document: doc, playbackEngine: self, startChunkIndex: targetChunkIndex)
+        
+        updateNowPlayingPlaybackInfo()
+        
+        if wasPlaying {
+            self.isPlaying = true
         }
     }
 
@@ -247,29 +421,28 @@ public class AudioPlaybackEngine: ObservableObject {
                 guard localPlayTime >= 0 else { return }
                 
                 let globalPlayTime = playingChunk.globalStartTime + localPlayTime
-                self.currentTime = min(globalPlayTime, self.duration)
+                self.currentTime = min(globalPlayTime, max(self.duration, self.currentDocument?.estimatedDuration ?? 0))
                 
-                // Word highlighting across the whole document
-                if let doc = self.currentDocument {
-                    let timestamps = doc.decodedWordTimestamps
-                    if !timestamps.isEmpty {
-                        var low = 0
-                        var high = timestamps.count - 1
-                        var ans: Int? = nil
-                        while low <= high {
-                            let mid = (low + high) / 2
-                            if timestamps[mid].startTime <= globalPlayTime {
-                                ans = mid
-                                low = mid + 1
-                            } else {
-                                high = mid - 1
-                            }
+                let timestamps = playingChunk.timestamps
+                if !timestamps.isEmpty {
+                    var low = 0
+                    var high = timestamps.count - 1
+                    var ans: Int? = nil
+                    
+                    while low <= high {
+                        let mid = (low + high) / 2
+                        if timestamps[mid].startTime <= localPlayTime {
+                            ans = mid
+                            low = mid + 1
+                        } else {
+                            high = mid - 1
                         }
-                        if let foundIndex = ans {
-                            let word = timestamps[foundIndex]
-                            if globalPlayTime <= word.endTime + 0.5 {
-                                self.currentWordIndex = foundIndex
-                            }
+                    }
+                    
+                    if let foundIndex = ans {
+                        let word = timestamps[foundIndex]
+                        if localPlayTime <= word.endTime + 0.5 {
+                            PlaybackProgress.shared.currentWord = word
                         }
                     }
                 }
@@ -307,8 +480,12 @@ public class AudioPlaybackEngine: ObservableObject {
             Task { @MainActor in
                 // If there are no more items in the queue and generation is finished, we're done
                 if self.queuePlayer?.items().count ?? 0 <= 1 && !self.isGenerationActive {
-                    self.isPlaying = false
-                    self.updateNowPlayingPlaybackInfo()
+                    self.pause()
+                    
+                    // Trigger auto-advance to next chapter in queue
+                    Task {
+                        PlaybackCoordinator.shared.advanceNext()
+                    }
                 }
             }
         }
@@ -378,8 +555,11 @@ public class AudioPlaybackEngine: ObservableObject {
     private func updateNowPlayingPlaybackInfo() {
         guard var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
         
+        let isFullyGenerated = currentDocument?.audioFileURL != nil
+        let displayDuration = isFullyGenerated ? duration : max(duration, currentDocument?.estimatedDuration ?? duration)
+        
         nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
-        nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = duration
+        nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = displayDuration
         nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
         
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo

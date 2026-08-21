@@ -20,6 +20,13 @@ public final class Document {
     
     public var folder: Folder?
     
+    @Transient
+    public var estimatedDuration: TimeInterval {
+        // Average speaking rate for Kokoro: 170 words per minute -> 2.83 words per second
+        let count = wordCount > 0 ? wordCount : bodyText.split(separator: " ").count
+        return TimeInterval(count) / 2.83
+    }
+    
     // Dynamically check if the cached audio exists
     @Transient
     public var audioFileURL: URL? {
@@ -29,6 +36,18 @@ public final class Document {
         }
         return nil
     }
+    
+    @Transient
+    public var audioCacheDirectory: URL {
+        let dirURL = StorageManager.shared.audioCacheURL.appendingPathComponent(id.uuidString)
+        try? FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+        return dirURL
+    }
+    
+    public func chunkURL(for index: Int) -> URL {
+        return audioCacheDirectory.appendingPathComponent("chunk_\(index).m4a")
+    }
+    
     public var wordTimestamps: Data?
     
     @Transient private var _cachedDecodedWordTimestamps: [WordTimestamp]?

@@ -61,7 +61,7 @@ public class AudioGenerationManager: ObservableObject {
     }
     
     
-    public func generate(document: Document, playbackEngine: AudioPlaybackEngine) {
+    public func generate(document: Document, playbackEngine: AudioPlaybackEngine, startChunkIndex: Int = 0) {
         // Guard against duplicate taps
         guard !generatingDocumentIDs.contains(document.id) else { return }
         
@@ -98,14 +98,15 @@ public class AudioGenerationManager: ObservableObject {
             UIApplication.shared.isIdleTimerDisabled = true
             
             do {
-                playbackEngine.load(document: document)
+                if startChunkIndex == 0 {
+                    playbackEngine.load(document: document)
+                }
                 
-                let generator = try await KokoroTTSService.shared.synthesizeGenerator(document: document)
+                let generator = try await KokoroTTSService.shared.synthesizeGenerator(document: document, startChunkIndex: startChunkIndex)
                 
                 var isFirst = true
-                var allTimestamps: [WordTimestamp] = []
-                var totalChunks = 0
-                var urlsToConcatenate: [URL] = []
+                let segments = TextSegmenter.segment(text: document.bodyText)
+                var totalChunks = startChunkIndex
                 var accumulatedDuration: TimeInterval = 0.0
                 
                 var isThrottled = false
@@ -157,9 +158,8 @@ public class AudioGenerationManager: ObservableObject {
                     let exactDuration = try await AVURLAsset(url: chunk.fileURL).load(.duration).seconds
                     
                     // 3. Process the chunk
-                    allTimestamps.append(contentsOf: chunk.timestamps)
+                    let currentChunkIndex = totalChunks
                     totalChunks += 1
-                    urlsToConcatenate.append(chunk.fileURL)
                     
                     let updatedChunk = AudioChunk(fileURL: chunk.fileURL, duration: exactDuration, timestamps: chunk.timestamps)
                     accumulatedDuration += exactDuration
@@ -171,7 +171,6 @@ public class AudioGenerationManager: ObservableObject {
                     
                     await MainActor.run {
                         playbackEngine.enqueue(chunk: updatedChunk)
-                        document.decodedWordTimestamps = allTimestamps
                         if isFirst {
                             playbackEngine.play()
                             isFirst = false
@@ -179,62 +178,9 @@ public class AudioGenerationManager: ObservableObject {
                     }
                 }
                 
-                // Final flush of timestamps
-                await MainActor.run {
-                    document.decodedWordTimestamps = allTimestamps
-                }
-                
-                guard let self = self, !Task.isCancelled else { return }
-                
-                // Concatenate the chunks into the final audioFileURL
-                let finalURL = StorageManager.shared.audioCacheURL.appendingPathComponent("\(document.id.uuidString).m4a")
-                if FileManager.default.fileExists(atPath: finalURL.path) {
-                    try? FileManager.default.removeItem(at: finalURL)
-                }
-                
-                if !urlsToConcatenate.isEmpty {
-                    let composition = AVMutableComposition()
-                    guard let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-                        throw NSError(domain: "GenerationManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create composition track"])
-                    }
-                    
-                    var insertTime = CMTime.zero
-                    for url in urlsToConcatenate {
-                        let asset = AVURLAsset(url: url)
-                        let duration = try await asset.load(.duration)
-                        let track = try await asset.loadTracks(withMediaType: .audio).first
-                        if let track = track {
-                            try audioTrack.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: track, at: insertTime)
-                            insertTime = CMTimeAdd(insertTime, duration)
-                        }
-                    }
-                    
-                    do {
-                        if let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) {
-                            if #available(iOS 18.0, *) {
-                                try await exportSession.export(to: finalURL, as: .m4a)
-                            } else {
-                                exportSession.outputURL = finalURL
-                                exportSession.outputFileType = .m4a
-                                await exportSession.export()
-                                
-                                if exportSession.status == .completed {
-                                    // Timestamps already updated during streaming
-                                } else if let error = exportSession.error {
-                                    throw error
-                                }
-                            }
-                        }
-                    } catch {
-                        Log.tts.error("Failed to export concatenated audio (likely in background): \(error.localizedDescription, privacy: .public)")
-                        // We intentionally don't throw to the outer block to avoid showing an error
-                        // to the user when the generation itself succeeded but the final save failed.
-                    }
-                }
-                
-                Task { @MainActor in
-                    self.generationProgress = nil
-                    self.generatingDocumentIDs.remove(documentID)
+                Task { @MainActor [weak self] in
+                    self?.generationProgress = nil
+                    self?.generatingDocumentIDs.remove(documentID)
                 }
             } catch {
                 Task { @MainActor in

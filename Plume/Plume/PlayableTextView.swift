@@ -4,8 +4,8 @@ import AVFoundation
 
 struct PlayableTextView: UIViewRepresentable, Equatable {
     let text: String
-    let timestamps: [WordTimestamp]
-    let currentWordIndex: Int?
+    let currentWord: WordTimestamp?
+    let estimatedDuration: TimeInterval
     
     let fontFamily: String
     let fontSize: Double
@@ -14,18 +14,18 @@ struct PlayableTextView: UIViewRepresentable, Equatable {
     let textColor: UIColor
     let backgroundColor: UIColor
     
-    let onWordTapped: (TimeInterval) -> Void
+    let onWordTapped: (TimeInterval?, Int) -> Void
     
     static func == (lhs: PlayableTextView, rhs: PlayableTextView) -> Bool {
         return lhs.text == rhs.text &&
-               lhs.currentWordIndex == rhs.currentWordIndex &&
+               lhs.currentWord == rhs.currentWord &&
                lhs.fontFamily == rhs.fontFamily &&
                lhs.fontSize == rhs.fontSize &&
                lhs.isBold == rhs.isBold &&
                lhs.lineSpacing == rhs.lineSpacing &&
                lhs.textColor == rhs.textColor &&
                lhs.backgroundColor == rhs.backgroundColor &&
-               lhs.timestamps == rhs.timestamps
+               lhs.estimatedDuration == rhs.estimatedDuration
     }
     
     func makeUIView(context: Context) -> UITextView {
@@ -83,16 +83,11 @@ struct PlayableTextView: UIViewRepresentable, Equatable {
             coordinator.lastTextColor = textColor
             coordinator.lastWordRange = nil
             coordinator.lastParagraphRange = nil
-            coordinator.lastScrolledWordIndex = -1
+            coordinator.lastScrolledWordCharIndex = -1
         }
         
         // 2. Find current word using passed index
-        var currentWord: WordTimestamp?
-        let currentWordIndex = self.currentWordIndex ?? -1
-        
-        if currentWordIndex >= 0 && currentWordIndex < timestamps.count {
-            currentWord = timestamps[currentWordIndex]
-        }
+        let currentWord = self.currentWord
         
         // 3. Update highlights efficiently
         var newWordRange: NSRange? = nil
@@ -137,14 +132,39 @@ struct PlayableTextView: UIViewRepresentable, Equatable {
         }
         
         // 4. Auto-scroll logic
-        if !coordinator.isUserScrolling, let nsRange = newWordRange {
+        if !coordinator.isUserScrolling, let nsRange = newWordRange, let currentWord = currentWord, let loc = currentWord.rangeLocation {
             // Only scroll if this is a new word
-            if coordinator.lastScrolledWordIndex != currentWordIndex {
-                coordinator.lastScrolledWordIndex = currentWordIndex
+            if coordinator.lastScrolledWordCharIndex != loc {
+                coordinator.lastScrolledWordCharIndex = loc
                 
                 // Slight delay to ensure layout is done
                 DispatchQueue.main.async {
-                    uiView.scrollRangeToVisible(nsRange)
+                    if let textPositionStart = uiView.position(from: uiView.beginningOfDocument, offset: nsRange.location),
+                       let textPositionEnd = uiView.position(from: textPositionStart, offset: nsRange.length),
+                       let textRange = uiView.textRange(from: textPositionStart, to: textPositionEnd) {
+                        
+                        let rect = uiView.firstRect(for: textRange) // Bounding box of the word
+                        
+                        // Define the Focus Zone (top 15-25% of the screen)
+                        let focusZoneTop = uiView.contentOffset.y + (uiView.bounds.height * 0.15)
+                        let focusZoneBottom = uiView.contentOffset.y + (uiView.bounds.height * 0.25)
+                        
+                        var targetOffset: CGPoint? = nil
+                        
+                        if rect.maxY > focusZoneBottom {
+                            let requiredShift = rect.maxY - focusZoneBottom
+                            targetOffset = CGPoint(x: 0, y: uiView.contentOffset.y + requiredShift)
+                        } else if rect.minY < focusZoneTop {
+                            let requiredShift = focusZoneTop - rect.minY
+                            targetOffset = CGPoint(x: 0, y: uiView.contentOffset.y - requiredShift)
+                        }
+                        
+                        if let target = targetOffset {
+                            let maxOffsetY = max(0, uiView.contentSize.height - uiView.bounds.height + uiView.contentInset.bottom)
+                            let clampedY = max(0, min(target.y, maxOffsetY))
+                            uiView.setContentOffset(CGPoint(x: 0, y: clampedY), animated: true)
+                        }
+                    }
                 }
             }
         }
@@ -156,7 +176,7 @@ struct PlayableTextView: UIViewRepresentable, Equatable {
     
     class Coordinator: NSObject, UITextViewDelegate {
         var parent: PlayableTextView
-        var lastScrolledWordIndex: Int = -1
+        var lastScrolledWordCharIndex: Int = -1
         var isUserScrolling: Bool = false
         var scrollResumeTimer: Timer?
         
@@ -176,23 +196,26 @@ struct PlayableTextView: UIViewRepresentable, Equatable {
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
             isUserScrolling = true
             scrollResumeTimer?.invalidate()
+            scrollResumeTimer = nil
+        }
+        
+        private func scheduleResumeTimer() {
+            scrollResumeTimer?.invalidate()
+            scrollResumeTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+                guard let self = self else { return }
+                self.isUserScrolling = false
+                self.lastScrolledWordCharIndex = -1 // Force an immediate re-center on the next word tick
+            }
         }
         
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
             if !decelerate {
-                startScrollResumeTimer()
+                scheduleResumeTimer()
             }
         }
         
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-            startScrollResumeTimer()
-        }
-        
-        private func startScrollResumeTimer() {
-            scrollResumeTimer?.invalidate()
-            scrollResumeTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
-                self?.isUserScrolling = false
-            }
+            scheduleResumeTimer()
         }
         
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -212,18 +235,9 @@ struct PlayableTextView: UIViewRepresentable, Equatable {
             let boundingRect = layoutManager.boundingRect(forGlyphRange: NSRange(location: glyphIndex, length: 1), in: textContainer)
             if !boundingRect.insetBy(dx: -15, dy: -15).contains(location) { return }
             
-            // Search for the tapped word using characterIndex (UTF-16 offset)
-            for timestamp in parent.timestamps {
-                if let loc = timestamp.rangeLocation, let len = timestamp.rangeLength {
-                    // Check if tap falls within word range, with a little padding (e.g. +1 space)
-                    if characterIndex >= loc && characterIndex <= (loc + len) {
-                        // We found the word!
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        parent.onWordTapped(timestamp.startTime)
-                        break
-                    }
-                }
-            }
+            // Always pass the character index, AudioPlaybackEngine will find the timestamp
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            parent.onWordTapped(nil, characterIndex)
         }
     }
 }

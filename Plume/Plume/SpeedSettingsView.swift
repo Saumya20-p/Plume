@@ -20,11 +20,14 @@ struct SpeedSettingsView: View {
     }
     
     private var remainingDurationString: String {
-        let remainingSeconds = max(0, engine.duration - progress.currentTime)
+        let isFullyGenerated = engine.currentDocument?.audioFileURL != nil
+        let baseTotal = isFullyGenerated ? engine.duration : (engine.currentDocument?.estimatedDuration ?? 0)
+        
+        let remainingSeconds = max(0, baseTotal - progress.currentTime)
         let effectiveDuration = remainingSeconds / TimeInterval(engine.playbackRate)
         
         if effectiveDuration.isNaN || effectiveDuration.isInfinite {
-            return "Duration: ~00:00"
+            return "Remaining: ~00:00"
         }
         
         let hours = Int(effectiveDuration) / 3600
@@ -32,9 +35,9 @@ struct SpeedSettingsView: View {
         let seconds = Int(effectiveDuration) % 60
         
         if hours > 0 {
-            return String(format: "Duration: ~%02d:%02d:%02d", hours, minutes, seconds)
+            return String(format: "Remaining: ~%02d:%02d:%02d", hours, minutes, seconds)
         } else {
-            return String(format: "Duration: ~%02d:%02d", minutes, seconds)
+            return String(format: "Remaining: ~%02d:%02d", minutes, seconds)
         }
     }
     

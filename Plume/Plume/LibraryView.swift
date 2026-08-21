@@ -1,6 +1,13 @@
 import SwiftUI
 import SwiftData
 
+enum LibraryFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case inProgress = "In Progress"
+    case finished = "Finished"
+    var id: String { rawValue }
+}
+
 struct LibraryView: View {
     @Environment(\.modelContext) private var modelContext
     // Sort pinned items first, then by dateAdded
@@ -20,10 +27,15 @@ struct LibraryView: View {
     
     @State private var searchText = ""
     @State private var isSearchVisible = false
+    @State private var filterSelection: LibraryFilter = .all
     
     private var filteredDocuments: [Document] {
-        if searchText.isEmpty { return documents }
-        return documents.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+        let searched = searchText.isEmpty ? documents : documents.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+        switch filterSelection {
+        case .all: return searched
+        case .inProgress: return searched.filter { $0.progress > 0 && $0.progress < 0.99 }
+        case .finished: return searched.filter { $0.progress >= 0.99 }
+        }
     }
     
     private var filteredFolders: [Folder] {
@@ -87,6 +99,15 @@ struct LibraryView: View {
                     .padding(.horizontal)
                     .padding(.bottom, 16)
                     .transition(.move(edge: .top).combined(with: .opacity))
+                } else {
+                    Picker("Filter", selection: $filterSelection) {
+                        ForEach(LibraryFilter.allCases) { filter in
+                            Text(filter.rawValue).tag(filter)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+                    .padding(.bottom, 16)
                 }
                 
                 
