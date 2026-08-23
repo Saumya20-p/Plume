@@ -19,43 +19,76 @@ struct PlayerView: View {
     var body: some View {
         let activeTheme = appearanceManager.activeTheme(colorScheme: colorScheme)
         
-        ZStack {
+        ZStack(alignment: .bottom) {
             activeTheme.backgroundColor.ignoresSafeArea()
             
-            ZStack {
-                // ALWAYS show the text
-                PlayableTextView(
-                    text: document.bodyText,
-                    currentWord: progress.currentWord,
-                    estimatedDuration: document.estimatedDuration,
-                    fontFamily: appearanceManager.fontFamily,
-                    fontSize: appearanceManager.fontSize,
-                    isBold: appearanceManager.isBold,
-                    lineSpacing: appearanceManager.lineSpacing,
-                    textColor: UIColor(activeTheme.textColor),
-                    backgroundColor: UIColor(activeTheme.backgroundColor),
-                    onWordTapped: { _, charIndex in
-                        playbackEngine.seek(toCharIndex: charIndex)
-                        if !playbackEngine.isPlaying {
-                            playbackEngine.play()
-                        }
+            // ALWAYS show the text
+            PlayableTextView(
+                text: document.bodyText,
+                currentWord: progress.currentWord,
+                estimatedDuration: document.estimatedDuration,
+                fontFamily: appearanceManager.fontFamily,
+                fontSize: appearanceManager.fontSize,
+                isBold: appearanceManager.isBold,
+                lineSpacing: appearanceManager.lineSpacing,
+                textColor: UIColor(activeTheme.textColor),
+                backgroundColor: UIColor(activeTheme.backgroundColor),
+                onWordTapped: { _, charIndex in
+                    playbackEngine.seek(toCharIndex: charIndex)
+                    if !playbackEngine.isPlaying {
+                        playbackEngine.play()
                     }
-                )
-                .equatable()
-                .ignoresSafeArea(edges: .bottom)
-                
-                // Bottom Bar / Overlay for Generation & Playback
-                VStack {
-                    Spacer()
-                    PlayerControlsView(
-                        document: document,
-                        playbackEngine: playbackEngine,
-                        generationManager: generationManager,
-                        showQueueSheet: $showQueueSheet
-                    )
-                    .padding(.bottom, 24)
                 }
-            }
+            )
+            .equatable()
+            .ignoresSafeArea(edges: [.top, .bottom])
+            
+            // --- BOTTOM VEIL (True Progressive Blur) ---
+            VariableBlurView(direction: .bottomToTop, maxBlurRadius: 10)
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0.0),
+                            .init(color: .black.opacity(0.8), location: 0.6),
+                            .init(color: .black.opacity(0.9), location: 1.0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(height: 240)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            
+            // --- THEME-MATCHING FADE ---
+            LinearGradient(
+                stops: [
+                    .init(color: activeTheme.backgroundColor.opacity(0.0), location: 0.0),
+                    .init(color: activeTheme.backgroundColor.opacity(0.85), location: 0.6),
+                    .init(color: activeTheme.backgroundColor.opacity(0.95), location: 1.0)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 240)
+            .frame(maxHeight: .infinity, alignment: .bottom)
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            
+            PlayerControlsView(
+                document: document,
+                playbackEngine: playbackEngine,
+                generationManager: generationManager,
+                showQueueSheet: $showQueueSheet,
+                onDismiss: {
+                    isExplicitlyDismissing = true
+                    playbackEngine.presentedPlayerDocument = nil
+                    dismiss()
+                }
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
         }
         .navigationTitle(document.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -71,20 +104,10 @@ struct PlayerView: View {
                 }
             }
             ToolbarItem(placement: .navigationBarTrailing) {
-                HStack {
-                    Button {
-                        showQueueSheet = true
-                    } label: {
-                        Image(systemName: "text.quote")
-                            .font(.title2)
-                            .foregroundStyle(.white)
-                    }
-                    
-                    Button {
-                        showAppearanceSettings = true
-                    } label: {
-                        Image(systemName: "textformat.size")
-                    }
+                Button {
+                    showAppearanceSettings = true
+                } label: {
+                    Image(systemName: "textformat.size")
                 }
             }
         }
@@ -145,8 +168,10 @@ struct PlayerControlsView: View {
     @ObservedObject var progress = PlaybackProgress.shared
     @ObservedObject var generationManager: AudioGenerationManager
     @Binding var showQueueSheet: Bool
+    var onDismiss: () -> Void
     @State private var showSpeedSheet = false
-    
+    @State private var showVoiceSheet = false
+    @State private var coverImage: UIImage?
     private func formatTime(_ time: TimeInterval) -> String {
         let min = Int(time) / 60
         let sec = Int(time) % 60
@@ -154,108 +179,83 @@ struct PlayerControlsView: View {
     }
     
     var body: some View {
-        // Premium Speechify-like Player always visible
-        VStack(spacing: 16) {
+        VStack(spacing: 4) {
             // Top Row
             HStack {
-                // Avatar Placeholder
-                Image(systemName: "book.pages.fill")
-                    .resizable()
-                    .scaledToFit()
-                    .padding(8)
-                    .frame(width: 40, height: 40)
-                    .background(Color.secondary.opacity(0.2))
-                    .clipShape(Circle())
-                    
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(document.title)
-                        .font(.headline)
-                        .lineLimit(1)
-                        
-                    if generationManager.generatingDocumentIDs.contains(document.id) {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            Text(generationManager.generationProgress ?? "Preparing Audio...")
-                                .font(.subheadline.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                    } else if playbackEngine.chunks.isEmpty && document.audioFileURL == nil {
-                        Text("Ready to Play")
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    let isFullyGenerated = document.audioFileURL != nil
-                    let speed = Double(playbackEngine.playbackRate)
-                    
-                    if isFullyGenerated {
-                        Text("\(formatTime(progress.currentTime / speed)) / \(formatTime(playbackEngine.duration / speed))")
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("\(formatTime(progress.currentTime / speed)) / ~\(formatTime(document.estimatedDuration / speed))")
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
+                Button {
+                    showQueueSheet = true
+                } label: {
+                    Image(systemName: "list.bullet")
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .frame(width: 44, height: 44)
                 }
                 
                 Spacer()
                 
-                Button(action: {
+                VStack(alignment: .center, spacing: 2) {
+                    let speed = Double(playbackEngine.playbackRate)
+                    let isFullyGenerated = document.audioFileURL != nil
+                    let currentTimeStr = formatTime(progress.currentTime / speed)
+                    let totalTimeStr = isFullyGenerated ? formatTime(playbackEngine.duration / speed) : "~\(formatTime(document.estimatedDuration / speed))"
+                    
+                    Text("\(currentTimeStr) / \(totalTimeStr)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                
+                Spacer()
+                
+                Button {
                     playbackEngine.pause()
                     if generationManager.generatingDocumentIDs.contains(document.id) {
                         generationManager.cancelCurrentGeneration()
                     }
-                }) {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.title2)
+                    onDismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.body)
                         .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44)
                 }
-                .accessibilityLabel("Stop playback and generation")
             }
-            
-            LiveEdgeScrubber(
-                currentTime: $progress.currentTime,
-                generatedDuration: playbackEngine.duration,
-                estimatedDuration: document.estimatedDuration,
-                isFullyGenerated: document.audioFileURL != nil,
-                onSeek: { targetTime in
-                    playbackEngine.seek(to: targetTime)
-                }
-            )
-            .padding(.vertical, -4)
             
             // Bottom Row
             HStack(spacing: 0) {
+                // Speed Button
                 Button(action: {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     showSpeedSheet = true
                 }) {
                     Text(String(format: "%.1fx", playbackEngine.playbackRate))
-                        .font(.subheadline.bold())
+                        .font(.caption.bold())
                         .foregroundStyle(.primary)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(ScaleButtonStyle())
-                .accessibilityLabel("Change playback speed")
                 
                 Spacer()
                 
                 let interval = UserDefaults.standard.integer(forKey: "defaultSkipInterval")
                 let skipVal = interval == 0 ? 15 : interval
                 
-                Button(action: { playbackEngine.skipBackward() }) {
+                Button(action: { 
+                    UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                    playbackEngine.skipBackward() 
+                }) {
                     Image(systemName: "gobackward.\(skipVal)")
-                        .font(.title2)
+                        .font(.body)
                         .foregroundStyle(.primary)
                         .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(ScaleButtonStyle())
-                .accessibilityLabel("Skip backward \(skipVal) seconds")
                 
                 Spacer()
                 
                 Button(action: {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     if playbackEngine.chunks.isEmpty && document.audioFileURL == nil && !generationManager.generatingDocumentIDs.contains(document.id) {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                             generationManager.generate(document: document, playbackEngine: playbackEngine)
@@ -270,47 +270,75 @@ struct PlayerControlsView: View {
                                 .tint(.white)
                         } else {
                             Image(systemName: playbackEngine.isPlaying ? "pause.fill" : "play.fill")
+                                .contentTransition(.symbolEffect(.replace))
                         }
                     }
-                    .font(.title)
-                    .frame(width: 64, height: 64)
+                    .font(.title2)
+                    .frame(width: 52, height: 52)
                     .background(DesignSystem.accent)
                     .foregroundStyle(.white)
                     .clipShape(Circle())
                 }
                 .buttonStyle(ScaleButtonStyle())
-                .accessibilityLabel(playbackEngine.isPlaying ? "Pause" : "Play")
                 
                 Spacer()
                 
-                Button(action: { playbackEngine.skipForward() }) {
-                    Image(systemName: "goforward.\(skipVal)")
-                        .font(.title2)
-                        .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(ScaleButtonStyle())
-                .accessibilityLabel("Skip forward \(skipVal) seconds")
-                
-                Spacer()
-                
-                Button(action: {
-                    showQueueSheet = true
+                Button(action: { 
+                    UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                    playbackEngine.skipForward() 
                 }) {
-                    Image(systemName: "list.bullet")
-                        .font(.title2)
+                    Image(systemName: "goforward.\(skipVal)")
+                        .font(.body)
                         .foregroundStyle(.primary)
                         .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(ScaleButtonStyle())
-                .accessibilityLabel("Open queue")
+                
+                Spacer()
+                
+                // Voice Button
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    showVoiceSheet = true
+                }) {
+                    Image(systemName: "person.wave.2.fill")
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(ScaleButtonStyle())
             }
         }
-        .padding()
-        .glassmorphic(cornerRadius: DesignSystem.cornerRadiusCard)
-        .padding(.horizontal)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 16) 
+        .padding(.top, 16)
+        .contentShape(Rectangle()) // Capture all taps so they don't fall through to text!
+        .background(
+            .regularMaterial,
+            in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+        )
+        .overlay(alignment: .top) {
+            LiveEdgeScrubber(
+                currentTime: $progress.currentTime,
+                generatedDuration: playbackEngine.duration,
+                estimatedDuration: document.estimatedDuration,
+                isFullyGenerated: document.audioFileURL != nil,
+                onSeek: { targetTime in
+                    playbackEngine.seek(to: targetTime)
+                }
+            )
+            // No offset needed if we want it completely inside the top edge, or offset slightly but clip it
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 5)
+
         .sheet(isPresented: $showSpeedSheet) {
             SpeedSettingsView()
+        }
+        .sheet(isPresented: $showVoiceSheet) {
+            VoiceSelectionSheetView(document: document, playbackEngine: playbackEngine)
         }
     }
 }
@@ -332,6 +360,7 @@ struct LiveEdgeScrubber: View {
     let onSeek: (TimeInterval) -> Void
     
     @State private var dragTime: TimeInterval? = nil
+    @State private var isDragging: Bool = false
     
     var body: some View {
         GeometryReader { geometry in
@@ -341,53 +370,167 @@ struct LiveEdgeScrubber: View {
             let displayTime = dragTime ?? currentTime
             let progressRatio = CGFloat(displayTime / validTotal)
             let bufferRatio = isFullyGenerated ? 1.0 : CGFloat(generatedDuration / validTotal)
+            let barHeight: CGFloat = 3
             
-            ZStack(alignment: .leading) {
+            ZStack(alignment: .topLeading) {
                 // Background Track
-                Capsule()
+                Rectangle()
                     .fill(Color.secondary.opacity(0.3))
-                    .frame(height: 6)
+                    .frame(height: barHeight)
+                    .clipShape(Capsule())
                 
-                // Gray Buffer Bar
-                Capsule()
+                // Buffer Track
+                Rectangle()
                     .fill(Color.secondary.opacity(0.6))
-                    .frame(width: max(0, geometry.size.width * min(1.0, bufferRatio)), height: 6)
+                    .frame(width: max(0, geometry.size.width * min(1.0, bufferRatio)), height: barHeight)
+                    .clipShape(Capsule())
                 
-                // Active Playback Progress
-                Capsule()
+                // Active Progress
+                Rectangle()
                     .fill(DesignSystem.accent)
-                    .frame(width: max(0, geometry.size.width * min(1.0, progressRatio)), height: 6)
+                    .frame(width: max(0, geometry.size.width * min(1.0, progressRatio)), height: barHeight)
+                    .clipShape(Capsule())
                 
-                // Playhead Thumb
-                Circle()
-                    .fill(Color.white)
-                    .shadow(radius: 2)
-                    .frame(width: 14, height: 14)
-                    .offset(x: max(0, geometry.size.width * min(1.0, progressRatio) - 7))
-                    .gesture(
-                        DragGesture()
-                            .onChanged { value in
-                                let fraction = max(0, min(1, value.location.x / geometry.size.width))
-                                let targetTime = fraction * validTotal
-                                
-                                dragTime = targetTime
-                            }
-                            .onEnded { _ in
-                                if let finalTime = dragTime {
-                                    onSeek(finalTime)
-                                }
-                                dragTime = nil
-                            }
-                    )
+                // Playhead Thumb (only visible when dragging for a cleaner look)
+                if isDragging {
+                    Circle()
+                        .fill(DesignSystem.accent)
+                        .shadow(radius: 2)
+                        .frame(width: 12, height: 12)
+                        .offset(x: max(0, geometry.size.width * min(1.0, progressRatio) - 6), y: -4.5)
+                }
             }
-            .contentShape(Rectangle())
-            .onTapGesture { location in
-                let fraction = max(0, min(1, location.x / geometry.size.width))
-                let targetTime = fraction * validTotal
-                
-                onSeek(targetTime)
+            .frame(height: 44, alignment: .top) // 44px invisible hit target
+            .contentShape(Rectangle()) // Capture touches in the transparent area
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        isDragging = true
+                        let fraction = max(0, min(1, value.location.x / geometry.size.width))
+                        let targetTime = fraction * validTotal
+                        dragTime = targetTime
+                    }
+                    .onEnded { _ in
+                        isDragging = false
+                        if let finalTime = dragTime {
+                            onSeek(finalTime)
+                        }
+                        dragTime = nil
+                    }
+            )
+        }
+        .frame(height: 44)
+    }
+}
+
+
+struct VoiceSelectionSheetView: View {
+    let document: Document
+    @ObservedObject var playbackEngine: AudioPlaybackEngine
+    
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("kokoroVoice") private var currentVoiceId = "af_heart"
+    
+    @State private var previewPlayer: AVAudioPlayer?
+    @State private var showingConfirmAlert = false
+    @State private var pendingVoiceId: String?
+    
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(allVoiceCategories) { category in
+                    Section(header: Text(category.name)) {
+                        ForEach(category.voices) { voice in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(voice.name)
+                                        .font(.body)
+                                    Text(voice.gender)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                
+                                Button {
+                                    playPreview(for: voice.id)
+                                } label: {
+                                    Image(systemName: "speaker.wave.2.fill")
+                                        .foregroundStyle(DesignSystem.accent)
+                                        .padding(8)
+                                        .background(DesignSystem.accent.opacity(0.1))
+                                        .clipShape(Circle())
+                                }
+                                .buttonStyle(.plain)
+                                
+                                if voice.id == currentVoiceId {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(DesignSystem.accent)
+                                        .padding(.leading, 8)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if voice.id != currentVoiceId {
+                                    pendingVoiceId = voice.id
+                                    showingConfirmAlert = true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Select Voice")
+            .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        previewPlayer?.stop()
+                        dismiss()
+                    }
+                }
+            }
+            .alert("Change Voice?", isPresented: $showingConfirmAlert) {
+                Button("Cancel", role: .cancel) {
+                    pendingVoiceId = nil
+                }
+                Button("Change & Restart", role: .destructive) {
+                    if let newVoice = pendingVoiceId {
+                        currentVoiceId = newVoice
+                        previewPlayer?.stop()
+                        AudioGenerationManager.shared.cancelCurrentGeneration()
+                        playbackEngine.pause()
+                        
+                        // Delete existing files
+                        if let url = document.audioFileURL {
+                            try? FileManager.default.removeItem(at: url)
+                        }
+                        
+                        // Wait slightly for locks to release, then regenerate
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            AudioGenerationManager.shared.generate(document: document, playbackEngine: playbackEngine)
+                            dismiss()
+                        }
+                    }
+                }
+            } message: {
+                Text("Changing the voice will delete the currently generated audio for this chapter and start over.")
             }
         }
-        .frame(height: 24)
+        .onDisappear {
+            previewPlayer?.stop()
+        }
+    }
+    
+    private func playPreview(for voiceId: String) {
+        previewPlayer?.stop()
+        guard let url = Bundle.main.url(forResource: voiceId, withExtension: "m4a") else { return }
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            try AVAudioSession.sharedInstance().setActive(true)
+            previewPlayer = try AVAudioPlayer(contentsOf: url)
+            previewPlayer?.play()
+        } catch {
+            print("Failed to play preview: \(error)")
+        }
     }
 }

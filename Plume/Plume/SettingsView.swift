@@ -88,6 +88,7 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+
                 
                 Section {
                     DeleteAllDataView()

@@ -3,6 +3,7 @@ import SwiftData
 
 struct FolderDetailView: View {
     @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var playbackEngine = AudioPlaybackEngine.shared
     let folder: Folder
     
     @Query(sort: \Folder.dateAdded, order: .reverse)
@@ -34,10 +35,15 @@ struct FolderDetailView: View {
             } else {
                 List {
                     ForEach(activeDocs) { doc in
-                        LibraryRowView(doc: doc, allFolders: allFolders, onSoftDelete: { d in
-                            d.deletedAt = Date()
-                            d.isPinned = false
-                        })
+                        Button {
+                            playbackEngine.presentedPlayerDocument = doc
+                        } label: {
+                            LibraryRowView(doc: doc, allFolders: allFolders, onSoftDelete: { d in
+                                d.deletedAt = Date()
+                                d.isPinned = false
+                            })
+                        }
+                        .buttonStyle(.plain)
                         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                         .listRowSeparator(.hidden)
                     }

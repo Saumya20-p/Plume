@@ -20,6 +20,8 @@ struct MainTabView: View {
     @State private var showingCreateFolder = false
     @State private var newFolderName = ""
     @State private var showingFileImporter = false
+    @State private var showingImportError = false
+    @State private var importErrorMessage = ""
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -151,6 +153,11 @@ struct MainTabView: View {
         ) { result in
             handleFileImport(result: result)
         }
+        .alert("Import Failed", isPresented: $showingImportError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(importErrorMessage)
+        }
     }
     
     private func handleFileImport(result: Result<[URL], Error>) {
@@ -190,45 +197,70 @@ struct MainTabView: View {
                 PlaybackQueueManager.shared.enqueue(doc.id)
             }
         case .failure(let error):
-            print("Import error: \(error.localizedDescription)")
+            self.importErrorMessage = error.localizedDescription
+            self.showingImportError = true
         }
     }
     
     private func handleEPUBImport(url: URL) {
         do {
-            // Copy to temp location so we can work with it after security scope ends
-            let tempCopy = FileManager.default.temporaryDirectory
-                .appendingPathComponent("import_\(UUID().uuidString).epub")
-            try FileManager.default.copyItem(at: url, to: tempCopy)
+            var coordinatedError: NSError?
+            var finalError: Error?
             
-            let book = try EPUBParser.parse(epubURL: tempCopy)
-            
-            // Clean up temp copy
-            try? FileManager.default.removeItem(at: tempCopy)
-            
-            // Create a folder for the book
-            let folder = Folder(name: book.title)
-            folder.coverImageData = book.coverImageData
-            modelContext.insert(folder)
-            
-            // Create a Document for each chapter
-            for chapter in book.chapters {
-                let doc = Document(
-                    title: "\(book.title) / \(chapter.title)",
-                    bodyText: chapter.bodyText,
-                    wordCount: chapter.wordCount
-                )
-                doc.folder = folder
-                doc.coverImageData = book.coverImageData
-                modelContext.insert(doc)
+            NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinatedError) { (secureURL) in
+                do {
+                    let tempCopy = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("import_\(UUID().uuidString).epub")
+                    try FileManager.default.copyItem(at: secureURL, to: tempCopy)
+                    
+                    let extractedFilename = url.deletingPathExtension().lastPathComponent
+                    let fallbackTitle = extractedFilename.isEmpty ? "Untitled Book" : extractedFilename
+                    
+                    Task {
+                        defer { try? FileManager.default.removeItem(at: tempCopy) }
+                        do {
+                            let book = try EPUBParser.parse(epubURL: tempCopy, fallbackTitle: fallbackTitle)
+                            
+                            await MainActor.run {
+                                let folder = Folder(name: book.title)
+                                folder.coverImageData = book.coverImageData
+                                modelContext.insert(folder)
+                                
+                                for chapter in book.chapters {
+                                    let doc = Document(
+                                        title: chapter.title,
+                                        bodyText: chapter.bodyText,
+                                        wordCount: chapter.wordCount
+                                    )
+                                    doc.folder = folder
+                                    doc.coverImageData = book.coverImageData
+                                    modelContext.insert(doc)
+                                }
+                                
+                                try? modelContext.save()
+                                
+                                if let firstDoc = folder.documents.first {
+                                    PlaybackQueueManager.shared.enqueue(firstDoc.id)
+                                }
+                            }
+                        } catch {
+                            await MainActor.run {
+                                self.importErrorMessage = error.localizedDescription
+                                self.showingImportError = true
+                            }
+                        }
+                    }
+                } catch {
+                    finalError = error
+                }
             }
             
-            // Enqueue the first chapter
-            if let firstDoc = folder.documents.first {
-                PlaybackQueueManager.shared.enqueue(firstDoc.id)
+            if let error = finalError ?? coordinatedError {
+                throw error
             }
         } catch {
-            print("EPUB import error: \(error.localizedDescription)")
+            self.importErrorMessage = error.localizedDescription
+            self.showingImportError = true
         }
     }
 }

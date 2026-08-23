@@ -105,7 +105,6 @@ public class AudioGenerationManager: ObservableObject {
                 let generator = try await KokoroTTSService.shared.synthesizeGenerator(document: document, startChunkIndex: startChunkIndex)
                 
                 var isFirst = true
-                let segments = TextSegmenter.segment(text: document.bodyText)
                 var totalChunks = startChunkIndex
                 var accumulatedDuration: TimeInterval = 0.0
                 
@@ -158,7 +157,6 @@ public class AudioGenerationManager: ObservableObject {
                     let exactDuration = try await AVURLAsset(url: chunk.fileURL).load(.duration).seconds
                     
                     // 3. Process the chunk
-                    let currentChunkIndex = totalChunks
                     totalChunks += 1
                     
                     let updatedChunk = AudioChunk(fileURL: chunk.fileURL, duration: exactDuration, timestamps: chunk.timestamps)

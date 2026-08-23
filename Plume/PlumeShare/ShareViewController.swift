@@ -45,7 +45,7 @@ class ShareViewController: UIViewController {
     private func extractData() {
         guard let extensionItem = extensionContext?.inputItems.first as? NSExtensionItem,
               let itemProviders = extensionItem.attachments else {
-            self.finish()
+            self.finish(url: nil)
             return
         }
         
@@ -83,7 +83,7 @@ class ShareViewController: UIViewController {
             if let url = foundURL {
                 self.saveItem(url: url, html: foundHTML)
             }
-            self.finish()
+            self.finish(url: foundURL)
         }
     }
     
@@ -103,8 +103,11 @@ class ShareViewController: UIViewController {
         }
     }
     
-    private func finish() {
+    private func finish(url: String?) {
         DispatchQueue.main.async {
+            if let defaults = UserDefaults(suiteName: AppGroup.identifier), let url = url {
+                defaults.set(url, forKey: "autoOpenLatestSharedURL")
+            }
             self.openHostApp()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 self.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)

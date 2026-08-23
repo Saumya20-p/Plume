@@ -312,6 +312,14 @@ struct LibraryView: View {
                     doc.coverImageData = coverImageData
                     modelContext.insert(doc)
                     PlaybackQueueManager.shared.enqueue(doc.id)
+                    if let defaults = UserDefaults(suiteName: AppGroup.identifier),
+                       let autoOpenURL = defaults.string(forKey: "autoOpenLatestSharedURL"),
+                       autoOpenURL == itemURL {
+                        defaults.removeObject(forKey: "autoOpenLatestSharedURL")
+                        await MainActor.run {
+                            playbackEngine.presentedPlayerDocument = doc
+                        }
+                    }
                 }
             }
         }

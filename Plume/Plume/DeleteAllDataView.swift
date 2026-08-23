@@ -6,7 +6,7 @@ struct DeleteAllDataView: View {
     @Environment(\.dismiss) private var dismiss
     
     @Query private var documents: [Document]
-    @Query private var sessions: [ListeningSession]
+    @Query private var folders: [Folder]
     
     @State private var showStep1 = false
     @State private var isDeleting = false
@@ -16,63 +16,63 @@ struct DeleteAllDataView: View {
             showStep1 = true
         }) {
             HStack {
-                Label("Delete All Data", systemImage: "exclamationmark.triangle.fill")
+                Label("Delete All Files", systemImage: "trash")
                 Spacer()
             }
         }
         .foregroundStyle(.red)
-        .alert("Delete All Data?", isPresented: $showStep1) {
+        .alert("Delete All Files?", isPresented: $showStep1) {
             Button("Cancel", role: .cancel) { }
             Button("Continue", role: .destructive) {
                 deleteAllData()
             }
         } message: {
-            let totalTime = sessions.reduce(0) { $0 + $1.secondsListened }
-            let hours = Int(totalTime) / 3600
-            let minutes = (Int(totalTime) % 3600) / 60
-            let timeString = hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
-            
-            Text("This will permanently delete \(documents.count) chapters and \(timeString) of listening history. This cannot be undone.")
+            Text("This will permanently delete \(documents.count) chapters and all folders. Your listening history and statistics will be preserved. This cannot be undone.")
         }
     }
     
     private func deleteAllData() {
         isDeleting = true
         
-        Task {
+        Task { @MainActor in
             // Fetch everything explicitly to ensure full deletion
             let docDescriptor = FetchDescriptor<Document>()
-            let sessionDescriptor = FetchDescriptor<ListeningSession>()
+            let folderDescriptor = FetchDescriptor<Folder>()
             
             let allDocs = (try? modelContext.fetch(docDescriptor)) ?? documents
-            let allSessions = (try? modelContext.fetch(sessionDescriptor)) ?? sessions
+            let allFolders = (try? modelContext.fetch(folderDescriptor)) ?? folders
             
-            // Delete generated audio files first
+            // Clear any playback queue and generation state FIRST to prevent UI crashes on deleted objects
+            AudioPlaybackEngine.shared.pause()
+            AudioPlaybackEngine.shared.currentDocument = nil
+            AudioPlaybackEngine.shared.presentedPlayerDocument = nil
+            AudioPlaybackEngine.shared.chunks = []
+            PlaybackProgress.shared.currentWord = nil
+            PlaybackProgress.shared.currentTime = 0
+            PlaybackQueueManager.shared.clear()
+            AudioGenerationManager.shared.cancelCurrentGeneration()
+            
+            // Delete generated audio files and caches
             let fileManager = FileManager.default
             for document in allDocs {
                 if let url = document.audioFileURL {
                     try? fileManager.removeItem(at: url)
                 }
+                try? fileManager.removeItem(at: document.audioCacheDirectory)
             }
             
-            // Delete SwiftData models on MainActor
-            await MainActor.run {
-                for session in allSessions {
-                    modelContext.delete(session)
-                }
-                for document in allDocs {
-                    modelContext.delete(document)
-                }
-                
-                try? modelContext.save()
-                
-                // Clear any playback queue state
-                AudioPlaybackEngine.shared.pause()
-                PlaybackQueueManager.shared.clear()
-                
-                // Reset states
-                isDeleting = false
+            // Delete SwiftData models (documents first to avoid .nullify cascade overhead)
+            for document in allDocs {
+                modelContext.delete(document)
             }
+            for folder in allFolders {
+                modelContext.delete(folder)
+            }
+            
+            try? modelContext.save()
+            
+            // Reset states
+            isDeleting = false
         }
     }
 }

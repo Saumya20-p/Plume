@@ -34,7 +34,7 @@ struct PlayableTextView: UIViewRepresentable, Equatable {
         textView.isSelectable = false
         textView.isScrollEnabled = true
         textView.backgroundColor = .clear
-        textView.textContainerInset = UIEdgeInsets(top: 20, left: 16, bottom: 240, right: 16)
+        textView.textContainerInset = UIEdgeInsets(top: 110, left: 16, bottom: 280, right: 16)
         textView.showsVerticalScrollIndicator = false
         textView.delegate = context.coordinator
         

@@ -44,8 +44,8 @@ public final class Document {
         return dirURL
     }
     
-    public func chunkURL(for index: Int) -> URL {
-        return audioCacheDirectory.appendingPathComponent("chunk_\(index).m4a")
+    public func chunkURL(for index: Int, voice: String) -> URL {
+        return audioCacheDirectory.appendingPathComponent("chunk_\(index)_\(voice).m4a")
     }
     
     public var wordTimestamps: Data?

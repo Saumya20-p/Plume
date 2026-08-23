@@ -7,8 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0198369071B8C0F5DDF4C220 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 69171690529481296C628CE2 /* ZIPFoundation */; };
 		A00000000000000000000005 /* Numerics in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000003 /* Numerics */; };
 		A00000000000000000000006 /* MLXUtilsLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000004 /* MLXUtilsLibrary */; };
+		AB7D54D6A69612DA05FFC882 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 802240E4055A5061732DDBB5 /* ZIPFoundation */; };
 		B9D524153029AF47001DFA07 /* PlumeShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B9D5240B3029AF47001DFA07 /* PlumeShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		B9F04C113029CC67004BBF23 /* KokoroSwift in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C103029CC67004BBF23 /* KokoroSwift */; };
 		B9F04C143029CD23004BBF23 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C133029CD23004BBF23 /* MLX */; };
@@ -20,6 +22,7 @@
 		B9F04C203029CD23004BBF23 /* MLXRandom in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C1F3029CD23004BBF23 /* MLXRandom */; };
 		B9F04C233029CD49004BBF23 /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C223029CD49004BBF23 /* SwiftSoup */; };
 		B9F04C243029CDFB004BBF23 /* KokoroSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = B9F04C103029CC67004BBF23 /* KokoroSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		C4ABFFFBED456B0DA853FAC0 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 50AF5C2FA0ADFFFE0369ED27 /* ZIPFoundation */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -140,6 +143,7 @@
 				B9F04C233029CD49004BBF23 /* SwiftSoup in Frameworks */,
 				A00000000000000000000005 /* Numerics in Frameworks */,
 				A00000000000000000000006 /* MLXUtilsLibrary in Frameworks */,
+				C4ABFFFBED456B0DA853FAC0 /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -154,6 +158,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AB7D54D6A69612DA05FFC882 /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -161,6 +166,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0198369071B8C0F5DDF4C220 /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -231,6 +237,7 @@
 				B9F04C223029CD49004BBF23 /* SwiftSoup */,
 				A00000000000000000000003 /* Numerics */,
 				A00000000000000000000004 /* MLXUtilsLibrary */,
+				50AF5C2FA0ADFFFE0369ED27 /* ZIPFoundation */,
 			);
 			productName = Plume;
 			productReference = B962CF293029A0DC002DBEA1 /* Plume.app */;
@@ -277,6 +284,7 @@
 			);
 			name = PlumeUITests;
 			packageProductDependencies = (
+				802240E4055A5061732DDBB5 /* ZIPFoundation */,
 			);
 			productName = PlumeUITests;
 			productReference = B962CF403029A0DD002DBEA1 /* PlumeUITests.xctest */;
@@ -299,6 +307,7 @@
 			);
 			name = PlumeShare;
 			packageProductDependencies = (
+				69171690529481296C628CE2 /* ZIPFoundation */,
 			);
 			productName = PlumeShare;
 			productReference = B9D5240B3029AF47001DFA07 /* PlumeShare.appex */;
@@ -345,6 +354,7 @@
 				B9F04C213029CD49004BBF23 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
 				A00000000000000000000001 /* XCRemoteSwiftPackageReference "swift-numerics" */,
 				A00000000000000000000002 /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */,
+				31F3D406B9FCA556F678CBF2 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B962CF2A3029A0DC002DBEA1 /* Products */;
@@ -822,6 +832,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		31F3D406B9FCA556F678CBF2 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.0;
+			};
+		};
 		A00000000000000000000001 /* XCRemoteSwiftPackageReference "swift-numerics" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/apple/swift-numerics.git";
@@ -865,6 +883,21 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		50AF5C2FA0ADFFFE0369ED27 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 31F3D406B9FCA556F678CBF2 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+		69171690529481296C628CE2 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 31F3D406B9FCA556F678CBF2 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+		802240E4055A5061732DDBB5 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 31F3D406B9FCA556F678CBF2 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
 		A00000000000000000000003 /* Numerics */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A00000000000000000000001 /* XCRemoteSwiftPackageReference "swift-numerics" */;

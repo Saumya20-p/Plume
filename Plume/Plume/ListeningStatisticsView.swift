@@ -12,9 +12,11 @@ enum StatsTimeframe: String, CaseIterable, Identifiable {
 }
 
 struct ListeningStatisticsView: View {
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \ListeningSession.date, order: .forward) private var sessions: [ListeningSession]
     
     @State private var selectedTimeframe: StatsTimeframe = .week
+    @State private var showResetAlert = false
     
     var body: some View {
         ScrollView {
@@ -32,11 +34,39 @@ struct ListeningStatisticsView: View {
                 timeChart
                 wordsChart
                 lifetimeTotals
+                
+                Button(role: .destructive, action: {
+                    showResetAlert = true
+                }) {
+                    Text("Reset Statistics")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color(uiColor: .secondarySystemGroupedBackground))
+                        .cornerRadius(12)
+                }
+                .padding(.horizontal)
+                .padding(.top, 16)
             }
             .padding(.vertical)
         }
         .navigationTitle("Listening Stats")
         .navigationBarTitleDisplayMode(.inline)
+        .alert("Reset Statistics?", isPresented: $showResetAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Reset", role: .destructive) {
+                resetStatistics()
+            }
+        } message: {
+            Text("This will permanently delete your entire listening history and lifetime totals. This cannot be undone.")
+        }
+    }
+    
+    private func resetStatistics() {
+        for session in sessions {
+            modelContext.delete(session)
+        }
+        try? modelContext.save()
     }
     
     // MARK: - Summary Card

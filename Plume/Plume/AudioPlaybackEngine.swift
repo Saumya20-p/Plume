@@ -102,7 +102,7 @@ public class AudioPlaybackEngine: ObservableObject {
         
         NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self = self else { return }
-            Task { @MainActor in self.updateEffectivePlaybackRate() }
+            Task { @MainActor [weak self] in self?.updateEffectivePlaybackRate() }
         }
     }
     
@@ -215,6 +215,26 @@ public class AudioPlaybackEngine: ObservableObject {
         } else {
             play()
         }
+    }
+    
+    public func resetAndSeek(to targetTime: TimeInterval) {
+        guard let doc = currentDocument else { return }
+        
+        
+        // Force the engine to discard existing loaded audio chunks so that
+        // performSeek doesn't just re-queue the old files and return early.
+        self.chunks.removeAll()
+        self.queuePlayer?.removeAllItems()
+        
+        self.seek(to: targetTime)
+        
+        // Don't call play() here, because seek(to:) will automatically handle resuming 
+        // if wasPlaying was true, or we can force it inside performSeek.
+        // Actually, performSeek does `if wasPlaying { self.isPlaying = true }`.
+        // But since we just removed all items, wasPlaying is true, and it sets isPlaying=true.
+        // And when the first chunk finishes generating, `enqueueChunk` will start it automatically!
+        // We just need to ensure the UI says playing.
+        self.isPlaying = true
     }
     
     public func seek(to targetTime: TimeInterval) {
@@ -409,7 +429,8 @@ public class AudioPlaybackEngine: ObservableObject {
         let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
         timeObserverToken = queuePlayer?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self = self else { return }
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
                 // Determine global time by identifying the current playing chunk
                 guard let currentItem = self.queuePlayer?.currentItem,
                       let currentURL = (currentItem.asset as? AVURLAsset)?.url,
@@ -477,7 +498,8 @@ public class AudioPlaybackEngine: ObservableObject {
         removeEndObserver()
         endObserverToken = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main) { [weak self] notification in
             guard let self = self else { return }
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
                 // If there are no more items in the queue and generation is finished, we're done
                 if self.queuePlayer?.items().count ?? 0 <= 1 && !self.isGenerationActive {
                     self.pause()
@@ -502,7 +524,8 @@ public class AudioPlaybackEngine: ObservableObject {
             
             let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt
             
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
                 switch type {
                 case .began:
                     self.wasPlayingBeforeInterruption = self.isPlaying
@@ -528,7 +551,8 @@ public class AudioPlaybackEngine: ObservableObject {
             }
             
             guard let self = self else { return }
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
                 if reason == .oldDeviceUnavailable {
                     self.pause()
                 }
@@ -570,35 +594,37 @@ public class AudioPlaybackEngine: ObservableObject {
         
         commandCenter.playCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
-            Task { @MainActor in self.play() }
+            Task { @MainActor [weak self] in self?.play() }
             return .success
         }
         
         commandCenter.pauseCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
-            Task { @MainActor in self.pause() }
+            Task { @MainActor [weak self] in self?.pause() }
             return .success
         }
         
         commandCenter.skipForwardCommand.preferredIntervals = [NSNumber(value: defaultSkipInterval)]
         commandCenter.skipForwardCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
-            Task { @MainActor in self.skipForward() }
+            Task { @MainActor [weak self] in self?.skipForward() }
             return .success
         }
         
         commandCenter.skipBackwardCommand.preferredIntervals = [NSNumber(value: defaultSkipInterval)]
         commandCenter.skipBackwardCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
-            Task { @MainActor in self.skipBackward() }
+            Task { @MainActor [weak self] in self?.skipBackward() }
             return .success
         }
         
         commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let self = self,
                   let positionEvent = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            Task { @MainActor in self.seek(to: positionEvent.positionTime) }
+            Task { @MainActor [weak self] in self?.seek(to: positionEvent.positionTime) }
             return .success
         }
     }
 }
+
+

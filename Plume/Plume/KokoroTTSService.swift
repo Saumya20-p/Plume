@@ -62,8 +62,8 @@ final class EngineBackgroundState: @unchecked Sendable {
 }
 
 actor KokoroEngineActor {
-    private let tts: KokoroTTS
-    private let voiceEmbedding: MLXArray
+    nonisolated private let tts: KokoroTTS
+
     private let language: KokoroSwift.Language
     
     // Semaphore is no longer needed since actor isolation guarantees serial execution
@@ -95,20 +95,24 @@ actor KokoroEngineActor {
         self.isCancelled = cancelled
     }
     
+    let voicesArrays: [String: MLXArray]
+    
     init(modelPath: URL, voicesPath: URL, language: KokoroSwift.Language) throws {
         self.tts = KokoroTTS(modelPath: modelPath, g2p: .misaki)
-        let voicesArrays = try MLX.loadArrays(url: voicesPath)
-        guard let heartVoice = voicesArrays["af_heart.npy"] ?? voicesArrays["af_heart"] else {
-            throw NSError(domain: "KokoroTTS", code: 3, userInfo: [NSLocalizedDescriptionKey: "Could not find af_heart voice in voices.npz"])
-        }
-        self.voiceEmbedding = heartVoice
+        self.voicesArrays = try MLX.loadArrays(url: voicesPath)
         self.language = language
-        
-
-
+    }
+    
+    private func getPreferredVoiceEmbedding() throws -> MLXArray {
+        let voiceName = UserDefaults.standard.string(forKey: "kokoroVoice") ?? "af_heart"
+        guard let embedding = voicesArrays["\(voiceName).npy"] ?? voicesArrays[voiceName] else {
+            throw NSError(domain: "KokoroTTS", code: 3, userInfo: [NSLocalizedDescriptionKey: "Could not find \(voiceName) voice"])
+        }
+        return embedding
     }
     
     func generateAudio(text: String) throws -> [Float] {
+        let voiceEmbedding = try getPreferredVoiceEmbedding()
         let result = try tts.generateAudio(voice: voiceEmbedding, language: language, text: text)
         return result.0
     }
@@ -160,7 +164,7 @@ actor KokoroEngineActor {
         var chunkTimestamps: [WordTimestamp] = []
         
         let ttsEngine = self.tts
-        let voice = self.voiceEmbedding
+        let voice = try getPreferredVoiceEmbedding()
         let lang = self.language
         
         try autoreleasepool {
@@ -334,6 +338,7 @@ actor KokoroEngineActor {
         
         var allTimestamps: [WordTimestamp] = []
         var currentTimeOffset: TimeInterval = 0
+        let voice = try getPreferredVoiceEmbedding()
         
         let sampleRate = Double(KokoroTTS.Constants.samplingRate)
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else {
@@ -363,7 +368,7 @@ actor KokoroEngineActor {
             guard !chunk.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             
             try autoreleasepool {
-                let result = try tts.generateAudio(voice: voiceEmbedding, language: language, text: chunk.text)
+                let result = try tts.generateAudio(voice: voice, language: language, text: chunk.text)
                 let audioFloats = result.0
                 
                 if let tokens = result.1 {
@@ -494,6 +499,7 @@ public class AudioChunkGenerator {
             return try await nextChunk() // skip empty and recurse
         }
         
+        let voiceName = UserDefaults.standard.string(forKey: "kokoroVoice") ?? "af_heart"
         let resultChunk = try await engineActor.generateSingleChunk(
             chunkText: chunk.text,
             chunkRange: chunk.range,
@@ -501,7 +507,7 @@ public class AudioChunkGenerator {
             currentTimeOffset: self.currentTimeOffset,
             format: self.format,
             settings: self.settings,
-            destinationURL: document.chunkURL(for: indexForChunk)
+            destinationURL: document.chunkURL(for: indexForChunk, voice: voiceName)
         )
         
         self.currentTimeOffset += resultChunk.duration
@@ -571,6 +577,15 @@ class KokoroTTSService: ObservableObject {
     
     func cancelGeneration() async {
         await engineActor?.setCancelled(true)
+    }
+    
+    func generateAllPreviews() async {
+        do {
+            try await loadModel()
+            try await engineActor?.generateAllPreviews()
+        } catch {
+            print("Failed to generate previews: \(error)")
+        }
     }
     
     func waitForGPUIdle() async {
@@ -710,5 +725,105 @@ class KokoroTTSService: ObservableObject {
         }
         
         playerNode.play()
+    }
+}
+import Foundation
+
+public struct VoiceCategory: Identifiable {
+    public let id = UUID()
+    public let name: String
+    public let voices: [Voice]
+}
+
+public struct Voice: Identifiable, Hashable {
+    public let id: String
+    public let name: String
+    public let gender: String
+}
+
+nonisolated public let allVoiceCategories: [VoiceCategory] = [
+    VoiceCategory(name: "American Female", voices: [
+        Voice(id: "af_heart", name: "Heart", gender: "Female"),
+        Voice(id: "af_alloy", name: "Alloy", gender: "Female"),
+        Voice(id: "af_aoede", name: "Aoede", gender: "Female"),
+        Voice(id: "af_bella", name: "Bella", gender: "Female"),
+        Voice(id: "af_jessica", name: "Jessica", gender: "Female"),
+        Voice(id: "af_kore", name: "Kore", gender: "Female"),
+        Voice(id: "af_nicole", name: "Nicole", gender: "Female"),
+        Voice(id: "af_nova", name: "Nova", gender: "Female"),
+        Voice(id: "af_river", name: "River", gender: "Female"),
+        Voice(id: "af_sarah", name: "Sarah", gender: "Female"),
+        Voice(id: "af_sky", name: "Sky", gender: "Female")
+    ]),
+    VoiceCategory(name: "American Male", voices: [
+        Voice(id: "am_adam", name: "Adam", gender: "Male"),
+        Voice(id: "am_echo", name: "Echo", gender: "Male"),
+        Voice(id: "am_eric", name: "Eric", gender: "Male"),
+        Voice(id: "am_fenrir", name: "Fenrir", gender: "Male"),
+        Voice(id: "am_liam", name: "Liam", gender: "Male"),
+        Voice(id: "am_michael", name: "Michael", gender: "Male"),
+        Voice(id: "am_onyx", name: "Onyx", gender: "Male"),
+        Voice(id: "am_puck", name: "Puck", gender: "Male"),
+        Voice(id: "am_santa", name: "Santa", gender: "Male")
+    ]),
+    VoiceCategory(name: "British Female", voices: [
+        Voice(id: "bf_alice", name: "Alice", gender: "Female"),
+        Voice(id: "bf_emma", name: "Emma", gender: "Female"),
+        Voice(id: "bf_isabella", name: "Isabella", gender: "Female"),
+        Voice(id: "bf_lily", name: "Lily", gender: "Female")
+    ]),
+    VoiceCategory(name: "British Male", voices: [
+        Voice(id: "bm_daniel", name: "Daniel", gender: "Male"),
+        Voice(id: "bm_fable", name: "Fable", gender: "Male"),
+        Voice(id: "bm_george", name: "George", gender: "Male"),
+        Voice(id: "bm_lewis", name: "Lewis", gender: "Male")
+    ])
+]
+import Foundation
+import AVFoundation
+
+extension KokoroEngineActor {
+    public func generateAllPreviews() throws {
+        let text = "Hi, I am ready to read."
+        let sampleRate = Double(KokoroTTS.Constants.samplingRate)
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else { return }
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 64000
+        ]
+        
+        let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        
+        let allVoiceIds = allVoiceCategories.flatMap { $0.voices }.map { $0.id }
+        
+        for voiceId in allVoiceIds {
+            let fileURL = docsDir.appendingPathComponent("\(voiceId).m4a")
+            if FileManager.default.fileExists(atPath: fileURL.path) { continue }
+            
+            guard let embedding = voicesArrays["\(voiceId).npy"] ?? voicesArrays[voiceId] else {
+                continue
+            }
+            
+            print("Generating preview for \(voiceId)...")
+            let result = try tts.generateAudio(voice: embedding, language: language, text: text)
+            let audioFloats = result.0
+            
+            guard let bufferFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+                  let buffer = AVAudioPCMBuffer(pcmFormat: bufferFormat, frameCapacity: AVAudioFrameCount(audioFloats.count)) else {
+                continue
+            }
+            buffer.frameLength = buffer.frameCapacity
+            for i in 0..<audioFloats.count {
+                buffer.floatChannelData![0][i] = audioFloats[i]
+            }
+            
+            let audioFile = try AVAudioFile(forWriting: fileURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+            try audioFile.write(from: buffer)
+            print("Saved preview to \(fileURL.path)")
+        }
+        
+        print("Done generating all previews in: \(docsDir.path)")
     }
 }
