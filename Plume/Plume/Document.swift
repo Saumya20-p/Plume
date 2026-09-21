@@ -73,6 +73,7 @@ public final class Document {
     public var isPinned: Bool
     public var deletedAt: Date?
     public var wordCount: Int
+    public var lastReadCharIndex: Int = 0
     
     public init(
         id: UUID = UUID(),
@@ -83,7 +84,8 @@ public final class Document {
         progress: Double = 0,
         extractionFailed: Bool = false,
         isPinned: Bool = false,
-        wordCount: Int = 0
+        wordCount: Int = 0,
+        lastReadCharIndex: Int = 0
     ) {
         self.id = id
         self.title = title
@@ -94,6 +96,7 @@ public final class Document {
         self.extractionFailed = extractionFailed
         self.isPinned = isPinned
         self.wordCount = wordCount
+        self.lastReadCharIndex = lastReadCharIndex
     }
 }
 

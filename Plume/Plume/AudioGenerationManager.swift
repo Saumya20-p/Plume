@@ -18,7 +18,9 @@ public class AudioGenerationManager: ObservableObject {
     
     /// The in-flight generation Task, stored so it can be cancelled.
     private var generationTask: Task<Void, Never>?
-    private var cancellationTask: Task<Void, Never>?
+    internal var cancellationTask: Task<Void, Never>?
+    private var generationRunState = PlaybackGenerationRunState()
+    private weak var activePlaybackEngine: AudioPlaybackEngine?
     
     public var isGeneratingAny: Bool {
         !generatingDocumentIDs.isEmpty
@@ -76,59 +78,68 @@ public class AudioGenerationManager: ObservableObject {
         generatingDocumentIDs.insert(document.id)
         
         let documentID = document.id
+        let session = KokoroGenerationSessionFactory.make(
+            documentID: documentID,
+            defaults: .standard
+        )
+        generationRunState.activate(sessionID: session.id)
+        activePlaybackEngine = playbackEngine
+        playbackEngine.beginGenerationSession(session)
         
-        generationTask = Task { [weak self] in
+        generationTask = Task { @MainActor [weak self, weak playbackEngine] in
+            guard let self, let playbackEngine else { return }
+
             defer {
-                Task { @MainActor [weak self] in
-                    guard let self = self else { return }
-                    if !self.isGeneratingAny {
-                        UIApplication.shared.isIdleTimerDisabled = false
-                        playbackEngine.finishGeneration()
-                    }
-                }
+                self.completeGeneration(
+                    sessionID: session.id,
+                    documentID: documentID,
+                    playbackEngine: playbackEngine
+                )
             }
             
-            if let cancelTask = self?.cancellationTask {
+            if let cancelTask = self.cancellationTask {
                 await cancelTask.value
             }
             
-            if Task.isCancelled { return }
+            guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { return }
             
             // Prevent the device from sleeping while generating in the foreground
             UIApplication.shared.isIdleTimerDisabled = true
             
             do {
                 if startChunkIndex == 0 {
-                    playbackEngine.load(document: document)
+                    playbackEngine.load(document: document, generationSession: session)
                 }
                 
-                let generator = try await KokoroTTSService.shared.synthesizeGenerator(document: document, startChunkIndex: startChunkIndex)
+                let generator = try await KokoroTTSService.shared.synthesizeGenerator(
+                    document: document,
+                    session: session,
+                    startChunkIndex: startChunkIndex
+                )
                 
                 var isFirst = true
                 var totalChunks = startChunkIndex
-                var accumulatedDuration: TimeInterval = 0.0
                 
                 var isThrottled = false
                 
                 while true {
-                    if Task.isCancelled { break }
+                    guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { break }
                     
                     // Ensure we don't spam generation loops if it's completely unchecked,
                     // but since nextChunk() is blocking and tied to TTS progress, we can just await it.
                     // Throttle only if buffer is very large so we don't use all RAM.
                     while true {
-                        if Task.isCancelled { break }
-                        let (bufferedDuration, currentPlayTime) = await MainActor.run {
-                            (playbackEngine.duration, playbackEngine.currentTime)
-                        }
+                        guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { break }
+                        let bufferedDuration = playbackEngine.bufferedTime
+                        let currentPlayTime = playbackEngine.currentTime
                         
                         let bufferAhead = bufferedDuration - currentPlayTime
                         
                         // High Watermark throttling only
-                        if !isThrottled && bufferAhead > (self?.highWatermarkSeconds ?? 120.0) {
+                        if !isThrottled && bufferAhead > self.highWatermarkSeconds {
                             isThrottled = true
                         }
-                        if isThrottled && bufferAhead <= (self?.lowWatermarkSeconds ?? 90.0) {
+                        if isThrottled && bufferAhead <= self.lowWatermarkSeconds {
                             isThrottled = false
                         }
                         
@@ -136,13 +147,11 @@ public class AudioGenerationManager: ObservableObject {
                             break
                         }
                         
-                        Task { @MainActor [weak self] in
-                            self?.generationProgress = "Buffering... (\(Int(bufferAhead))s ahead)"
-                        }
+                        self.generationProgress = "Buffering... (\(Int(bufferAhead))s ahead)"
                         try await Task.sleep(nanoseconds: 1_000_000_000)
                     }
                     
-                    if Task.isCancelled { break }
+                    guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { break }
                     
                     // Background Metal safety is handled by the engine actor's
                     // tryStartExecuting() gate, which blocks when isPaused is true
@@ -152,48 +161,48 @@ public class AudioGenerationManager: ObservableObject {
                     guard let chunk = try await generator.nextChunk() else {
                         break // End of chapter
                     }
-                    if Task.isCancelled { break }
+                    guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { break }
                     
                     let exactDuration = try await AVURLAsset(url: chunk.fileURL).load(.duration).seconds
+                    guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { break }
                     
                     // 3. Process the chunk
                     totalChunks += 1
                     
-                    let updatedChunk = AudioChunk(fileURL: chunk.fileURL, duration: exactDuration, timestamps: chunk.timestamps)
-                    accumulatedDuration += exactDuration
+                    let updatedChunk = AudioChunk(
+                        identity: chunk.identity,
+                        fileURL: chunk.fileURL,
+                        duration: exactDuration,
+                        timestamps: chunk.timestamps
+                    )
                     
                     let currentChunkCount = totalChunks
-                    Task { @MainActor in
-                        self?.generationProgress = "Streaming chunk \(currentChunkCount)..."
-                    }
+                    self.generationProgress = "Streaming chunk \(currentChunkCount)..."
                     
-                    await MainActor.run {
-                        playbackEngine.enqueue(chunk: updatedChunk)
-                        if isFirst {
-                            playbackEngine.play()
-                            isFirst = false
-                        }
+                    guard self.generationRunState.accepts(.enqueue(sessionID: session.id)), !Task.isCancelled else { break }
+                    
+                    guard playbackEngine.enqueue(chunk: updatedChunk) else { break }
+                    if isFirst {
+                        playbackEngine.play()
+                        isFirst = false
                     }
-                }
-                
-                Task { @MainActor [weak self] in
-                    self?.generationProgress = nil
-                    self?.generatingDocumentIDs.remove(documentID)
                 }
             } catch {
-                Task { @MainActor in
-                    self?.generationProgress = nil
-                    self?.generatingDocumentIDs.remove(documentID)
-                    if !(error is CancellationError) {
-                        Log.tts.error("Failed to synthesize: \(error.localizedDescription, privacy: .public)")
-                        self?.lastError = "Failed to generate audio: \(error.localizedDescription)"
-                    }
+                guard self.generationRunState.accepts(.failure(sessionID: session.id)) else { return }
+                if !(error is CancellationError) {
+                    Log.tts.error("Failed to synthesize: \(error.localizedDescription, privacy: .public)")
+                    self.lastError = "Failed to generate audio: \(error.localizedDescription)"
                 }
             }
         }
     }
 
     public func cancelCurrentGeneration() {
+        let cancelledSessionID = generationRunState.invalidateCurrent()
+        let cancelledDocumentID = generatingDocumentIDs.first
+        let playbackEngine = activePlaybackEngine
+
+        activePlaybackEngine = nil
         generationTask?.cancel()
         generationTask = nil
         
@@ -202,9 +211,29 @@ public class AudioGenerationManager: ObservableObject {
             await KokoroTTSService.shared.cancelGeneration()
         }
         
-        if let docID = generatingDocumentIDs.first {
-            generatingDocumentIDs.remove(docID)
+        if let cancelledDocumentID {
+            generatingDocumentIDs.remove(cancelledDocumentID)
         }
         generationProgress = nil
+        UIApplication.shared.isIdleTimerDisabled = false
+
+        if let cancelledSessionID {
+            playbackEngine?.finishGeneration(sessionID: cancelledSessionID)
+        }
+    }
+
+    private func completeGeneration(
+        sessionID: UUID,
+        documentID: UUID,
+        playbackEngine: AudioPlaybackEngine
+    ) {
+        guard generationRunState.finish(sessionID: sessionID) else { return }
+
+        generationTask = nil
+        activePlaybackEngine = nil
+        generatingDocumentIDs.remove(documentID)
+        generationProgress = nil
+        UIApplication.shared.isIdleTimerDisabled = false
+        playbackEngine.finishGeneration(sessionID: sessionID)
     }
 }

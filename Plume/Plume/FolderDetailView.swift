@@ -26,7 +26,7 @@ struct FolderDetailView: View {
                         .font(.system(size: 48))
                         .foregroundStyle(.tertiary)
                     Text("Folder is empty")
-                        .font(.headline)
+                        .font(.title3.weight(.semibold))
                     Text("Tap + to add a chapter")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -36,6 +36,7 @@ struct FolderDetailView: View {
                 List {
                     ForEach(activeDocs) { doc in
                         Button {
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
                             playbackEngine.presentedPlayerDocument = doc
                         } label: {
                             LibraryRowView(doc: doc, allFolders: allFolders, onSoftDelete: { d in
@@ -43,12 +44,10 @@ struct FolderDetailView: View {
                                 d.isPinned = false
                             })
                         }
-                        .buttonStyle(.plain)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                        .listRowSeparator(.hidden)
+                        .buttonStyle(ScaleButtonStyle())
                     }
                 }
-                .listStyle(.plain)
+                .listStyle(.insetGrouped)
             }
         }
         .navigationTitle(folder.name)

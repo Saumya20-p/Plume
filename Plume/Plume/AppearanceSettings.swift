@@ -29,16 +29,16 @@ enum ReadingTheme: String, CaseIterable, Identifiable {
     var backgroundColor: Color {
         switch self {
         case .basic: return .black
-        case .warm: return Color(red: 0.96, green: 0.94, blue: 0.89) // Cream/Sepia
-        case .muted: return Color(red: 0.2, green: 0.2, blue: 0.2) // Charcoal
+        case .warm: return Color(hex: "#DDD5CD") // Warm Greige
+        case .muted: return Color(hex: "#2E2E2E") // Charcoal Espresso
         }
     }
     
     var textColor: Color {
         switch self {
-        case .basic: return Color(white: 0.95) // Off-white
-        case .warm: return Color(red: 0.3, green: 0.2, blue: 0.1) // Dark brown
-        case .muted: return Color(white: 0.8) // Soft gray
+        case .basic: return Color(hex: "#F1ECE6") // Alabaster Cream
+        case .warm: return Color(hex: "#AF3E4D") // Lively Rosewood
+        case .muted: return Color(hex: "#D8D0C8") // Brightened Warm Greige
         }
     }
 }

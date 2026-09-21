@@ -126,6 +126,12 @@ struct PlayerView: View {
                 playbackEngine.pause()
                 generationManager.cancelCurrentGeneration()
                 playbackEngine.load(document: document)
+                
+                if document.lastReadCharIndex > 0 {
+                    PlaybackProgress.shared.currentWord = WordTimestamp(word: "", startTime: 0, endTime: 0, rangeLocation: document.lastReadCharIndex, rangeLength: 0)
+                } else {
+                    PlaybackProgress.shared.currentWord = nil
+                }
             }
             
             if document.audioFileURL != nil {
@@ -183,6 +189,7 @@ struct PlayerControlsView: View {
             // Top Row
             HStack {
                 Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     showQueueSheet = true
                 } label: {
                     Image(systemName: "list.bullet")
@@ -190,6 +197,7 @@ struct PlayerControlsView: View {
                         .foregroundStyle(.primary)
                         .frame(width: 44, height: 44)
                 }
+                .buttonStyle(ScaleButtonStyle())
                 
                 Spacer()
                 
@@ -207,6 +215,7 @@ struct PlayerControlsView: View {
                 Spacer()
                 
                 Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     playbackEngine.pause()
                     if generationManager.generatingDocumentIDs.contains(document.id) {
                         generationManager.cancelCurrentGeneration()
@@ -218,6 +227,7 @@ struct PlayerControlsView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 44, height: 44)
                 }
+                .buttonStyle(ScaleButtonStyle())
             }
             
             // Bottom Row
@@ -258,7 +268,13 @@ struct PlayerControlsView: View {
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     if playbackEngine.chunks.isEmpty && document.audioFileURL == nil && !generationManager.generatingDocumentIDs.contains(document.id) {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                            generationManager.generate(document: document, playbackEngine: playbackEngine)
+                            let resumeIndex = PlaybackProgress.shared.currentWord?.rangeLocation ?? document.lastReadCharIndex
+                            if resumeIndex > 0 {
+                                playbackEngine.seek(toCharIndex: resumeIndex)
+                                playbackEngine.isPlaying = true
+                            } else {
+                                generationManager.generate(document: document, playbackEngine: playbackEngine)
+                            }
                         }
                     } else {
                         playbackEngine.togglePlayPause()
@@ -400,24 +416,29 @@ struct LiveEdgeScrubber: View {
                         .offset(x: max(0, geometry.size.width * min(1.0, progressRatio) - 6), y: -4.5)
                 }
             }
-            .frame(height: 44, alignment: .top) // 44px invisible hit target
-            .contentShape(Rectangle()) // Capture touches in the transparent area
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        isDragging = true
-                        let fraction = max(0, min(1, value.location.x / geometry.size.width))
-                        let targetTime = fraction * validTotal
-                        dragTime = targetTime
-                    }
-                    .onEnded { _ in
-                        isDragging = false
-                        if let finalTime = dragTime {
-                            onSeek(finalTime)
-                        }
-                        dragTime = nil
-                    }
-            )
+            .frame(height: 44, alignment: .top) // 44px height for visual bounds
+            .overlay(alignment: .top) {
+                Color.clear
+                    .contentShape(Rectangle()) // Capture touches in the transparent area
+                    .frame(height: 24) // Restrict height to the top padding so it doesn't block buttons!
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                isDragging = true
+                                // Direct mapping across the full width
+                                let fraction = max(0, min(1, value.location.x / geometry.size.width))
+                                let targetTime = fraction * validTotal
+                                dragTime = targetTime
+                            }
+                            .onEnded { _ in
+                                isDragging = false
+                                if let finalTime = dragTime {
+                                    onSeek(finalTime)
+                                }
+                                dragTime = nil
+                            }
+                    )
+            }
         }
         .frame(height: 44)
     }
@@ -432,8 +453,6 @@ struct VoiceSelectionSheetView: View {
     @AppStorage("kokoroVoice") private var currentVoiceId = "af_heart"
     
     @State private var previewPlayer: AVAudioPlayer?
-    @State private var showingConfirmAlert = false
-    @State private var pendingVoiceId: String?
     
     var body: some View {
         NavigationStack {
@@ -471,14 +490,42 @@ struct VoiceSelectionSheetView: View {
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 if voice.id != currentVoiceId {
-                                    pendingVoiceId = voice.id
-                                    showingConfirmAlert = true
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                    currentVoiceId = voice.id
+                                    
+                                    let charIndex = PlaybackProgress.shared.currentWord?.rangeLocation ?? document.lastReadCharIndex
+                                    
+                                    previewPlayer?.stop()
+                                    AudioGenerationManager.shared.cancelCurrentGeneration()
+                                    playbackEngine.clearMemory()
+                                    
+                                    // Delete existing files
+                                    if let url = document.audioFileURL {
+                                        try? FileManager.default.removeItem(at: url)
+                                    }
+                                    
+                                    let cacheDir = document.audioCacheDirectory
+                                    if let files = try? FileManager.default.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: nil) {
+                                        for file in files where file.pathExtension == "m4a" {
+                                            try? FileManager.default.removeItem(at: file)
+                                        }
+                                    }
+                                    
+                                    // Wait for cancellation to complete, then regenerate
+                                    Task { @MainActor in
+                                        await AudioGenerationManager.shared.cancellationTask?.value
+                                        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms safety
+                                        playbackEngine.seek(toCharIndex: charIndex)
+                                    }
+                                    dismiss()
                                 }
                             }
                         }
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
             .navigationTitle("Select Voice")
             .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -489,33 +536,9 @@ struct VoiceSelectionSheetView: View {
                     }
                 }
             }
-            .alert("Change Voice?", isPresented: $showingConfirmAlert) {
-                Button("Cancel", role: .cancel) {
-                    pendingVoiceId = nil
-                }
-                Button("Change & Restart", role: .destructive) {
-                    if let newVoice = pendingVoiceId {
-                        currentVoiceId = newVoice
-                        previewPlayer?.stop()
-                        AudioGenerationManager.shared.cancelCurrentGeneration()
-                        playbackEngine.pause()
-                        
-                        // Delete existing files
-                        if let url = document.audioFileURL {
-                            try? FileManager.default.removeItem(at: url)
-                        }
-                        
-                        // Wait slightly for locks to release, then regenerate
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            AudioGenerationManager.shared.generate(document: document, playbackEngine: playbackEngine)
-                            dismiss()
-                        }
-                    }
-                }
-            } message: {
-                Text("Changing the voice will delete the currently generated audio for this chapter and start over.")
-            }
         }
+        .presentationBackground(.ultraThinMaterial)
+        .presentationBackgroundInteraction(.enabled(upThrough: .large))
         .onDisappear {
             previewPlayer?.stop()
         }

@@ -20,24 +20,51 @@ struct QueueSheetView: View {
                         .listRowBackground(Color.clear)
                 } else {
                     ForEach(queuedDocuments) { doc in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(doc.title)
-                                .font(.headline)
-                                .lineLimit(1)
-                            
-                            HStack {
-                                if doc.audioFileURL != nil {
-                                    Label("Ready", systemImage: "waveform")
-                                        .font(.caption)
-                                        .foregroundStyle(DesignSystem.accent)
+                        Button {
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            queueManager.skipTo(doc.id)
+                            AudioPlaybackEngine.shared.presentedPlayerDocument = doc
+                            dismiss()
+                        } label: {
+                            HStack(spacing: 12) {
+                                if let data = doc.coverImageData, let uiImage = UIImage(data: data) {
+                                    Image(uiImage: uiImage)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                        .frame(width: 48, height: 48)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
                                 } else {
-                                    Label("Will generate", systemImage: "arrow.triangle.2.circlepath")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(Color(UIColor.secondarySystemFill))
+                                        .frame(width: 48, height: 48)
+                                        .overlay(
+                                            Image(systemName: "book.closed.fill")
+                                                .foregroundStyle(.tertiary)
+                                                .font(.body)
+                                        )
+                                }
+                                
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(doc.title)
+                                        .font(.body.weight(.semibold))
+                                        .lineLimit(1)
+                                    
+                                    HStack {
+                                        if doc.audioFileURL != nil {
+                                            Label("Ready", systemImage: "waveform")
+                                                .font(.caption)
+                                                .foregroundStyle(DesignSystem.accent)
+                                        } else {
+                                            Label("Will stream", systemImage: "play.circle")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
                                 }
                             }
+                            .padding(.vertical, 4)
                         }
-                        .padding(.vertical, 4)
+                        .buttonStyle(.plain)
                     }
                     .onMove(perform: moveItems)
                     .onDelete(perform: deleteItems)
@@ -62,6 +89,8 @@ struct QueueSheetView: View {
                 loadDocuments()
             }
         }
+        .presentationBackground(.ultraThinMaterial)
+        .presentationBackgroundInteraction(.enabled(upThrough: .large))
     }
     
     private func loadDocuments() {

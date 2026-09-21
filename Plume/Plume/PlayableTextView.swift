@@ -34,7 +34,7 @@ struct PlayableTextView: UIViewRepresentable, Equatable {
         textView.isSelectable = false
         textView.isScrollEnabled = true
         textView.backgroundColor = .clear
-        textView.textContainerInset = UIEdgeInsets(top: 110, left: 16, bottom: 280, right: 16)
+        textView.textContainerInset = UIEdgeInsets(top: 16, left: 16, bottom: 280, right: 16)
         textView.showsVerticalScrollIndicator = false
         textView.delegate = context.coordinator
         
@@ -90,16 +90,25 @@ struct PlayableTextView: UIViewRepresentable, Equatable {
         let currentWord = self.currentWord
         
         // 3. Update highlights efficiently
-        var newWordRange: NSRange? = nil
-        var newParagraphRange: NSRange? = nil
+        let wordChanged = coordinator.lastCurrentWord != currentWord
         
-        if let currentWord = currentWord, let loc = currentWord.rangeLocation, let len = currentWord.rangeLength {
-            let nsRange = NSRange(location: loc, length: len)
-            if nsRange.location + nsRange.length <= text.utf16.count {
-                newWordRange = nsRange
-                let nsString = text as NSString
-                newParagraphRange = nsString.paragraphRange(for: nsRange)
+        var newWordRange: NSRange? = coordinator.lastWordRange
+        var newParagraphRange: NSRange? = coordinator.lastParagraphRange
+        
+        // Only run the heavy string math if the word actually changed or text rebuilt
+        if styleChanged || wordChanged {
+            newWordRange = nil
+            newParagraphRange = nil
+            
+            if let currentWord = currentWord, let loc = currentWord.rangeLocation, let len = currentWord.rangeLength {
+                let nsRange = NSRange(location: loc, length: len)
+                if nsRange.location + nsRange.length <= text.utf16.count {
+                    newWordRange = nsRange
+                    let nsString = text as NSString
+                    newParagraphRange = nsString.paragraphRange(for: nsRange)
+                }
             }
+            coordinator.lastCurrentWord = currentWord
         }
         
         let needsUpdate = coordinator.lastWordRange != newWordRange || coordinator.lastParagraphRange != newParagraphRange
@@ -160,8 +169,8 @@ struct PlayableTextView: UIViewRepresentable, Equatable {
                         }
                         
                         if let target = targetOffset {
-                            let maxOffsetY = max(0, uiView.contentSize.height - uiView.bounds.height + uiView.contentInset.bottom)
-                            let clampedY = max(0, min(target.y, maxOffsetY))
+                            let maxOffsetY = max(-uiView.adjustedContentInset.top, uiView.contentSize.height - uiView.bounds.height + uiView.adjustedContentInset.bottom)
+                            let clampedY = max(-uiView.adjustedContentInset.top, min(target.y, maxOffsetY))
                             uiView.setContentOffset(CGPoint(x: 0, y: clampedY), animated: true)
                         }
                     }
@@ -188,6 +197,7 @@ struct PlayableTextView: UIViewRepresentable, Equatable {
         var lastTextColor: UIColor?
         var lastWordRange: NSRange?
         var lastParagraphRange: NSRange?
+        var lastCurrentWord: WordTimestamp?
         
         init(_ parent: PlayableTextView) {
             self.parent = parent
@@ -201,11 +211,13 @@ struct PlayableTextView: UIViewRepresentable, Equatable {
         
         private func scheduleResumeTimer() {
             scrollResumeTimer?.invalidate()
-            scrollResumeTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            let timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
                 guard let self = self else { return }
                 self.isUserScrolling = false
                 self.lastScrolledWordCharIndex = -1 // Force an immediate re-center on the next word tick
             }
+            timer.tolerance = 0.3
+            scrollResumeTimer = timer
         }
         
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {

@@ -68,6 +68,9 @@ struct AppearanceSettingsView: View {
                         .tint(.accentColor)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
+            .scrollDisabled(true)
             .navigationTitle("Appearance")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -78,6 +81,9 @@ struct AppearanceSettingsView: View {
                 }
             }
         }
+        .presentationBackground(.ultraThinMaterial)
+        .presentationBackgroundInteraction(.enabled(upThrough: .height(650)))
+        .presentationDetents([.height(650)])
     }
     
     private func selectTheme(_ theme: ReadingTheme) {

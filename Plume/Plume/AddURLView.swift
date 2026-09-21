@@ -67,7 +67,13 @@ struct AddURLView: View {
                     var request = URLRequest(url: imageURL)
                     request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
                     request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8", forHTTPHeaderField: "Accept")
-                    if let (data, response) = try? await URLSession.shared.data(for: request),
+                    
+                    let config = URLSessionConfiguration.default
+                    config.waitsForConnectivity = true
+                    config.allowsExpensiveNetworkAccess = false
+                    let session = URLSession(configuration: config)
+                    
+                    if let (data, response) = try? await session.data(for: request),
                        let httpResponse = response as? HTTPURLResponse,
                        httpResponse.statusCode == 200 {
                         coverImageData = data

@@ -80,6 +80,7 @@ struct ListeningStatisticsView: View {
             
             Text(formatDuration(total))
                 .font(.system(size: 40, weight: .bold, design: .rounded))
+                .tracking(-1)
             
             Text("\(formatDuration(average)) / day average")
                 .font(.subheadline)
@@ -107,7 +108,7 @@ struct ListeningStatisticsView: View {
                         y: .value("Hours", item.value / 3600.0)
                     )
                     .foregroundStyle(DesignSystem.accent.gradient)
-                    .cornerRadius(4)
+                    .cornerRadius(8)
                 }
             }
             .frame(height: 200)
@@ -128,8 +129,8 @@ struct ListeningStatisticsView: View {
                         x: .value("Date", item.date, unit: unit(for: selectedTimeframe)),
                         y: .value("Words", item.value)
                     )
-                    .foregroundStyle(Color.blue.gradient)
-                    .cornerRadius(4)
+                    .foregroundStyle(Color.orange.gradient)
+                    .cornerRadius(8)
                 }
             }
             .frame(height: 200)

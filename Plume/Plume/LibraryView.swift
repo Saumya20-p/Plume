@@ -50,6 +50,7 @@ struct LibraryView: View {
                 HStack {
                     Text("Library")
                         .font(.largeTitle.bold())
+                        .tracking(-0.5)
                     Spacer()
                     HStack(spacing: 20) {
                         Button {
@@ -118,7 +119,7 @@ struct LibraryView: View {
                             .font(.system(size: 48))
                             .foregroundStyle(.tertiary)
                         Text("No chapters yet")
-                            .font(.headline)
+                            .font(.title3.weight(.semibold))
                         Text("Tap + to add a chapter")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -149,7 +150,7 @@ struct LibraryView: View {
                                         
                                         VStack(alignment: .leading, spacing: 4) {
                                             Text(folder.name)
-                                                .font(.headline)
+                                                .font(.body.weight(.semibold))
                                                 .lineLimit(1)
                                             
                                             Text("\(folder.documents.count) items")
@@ -179,16 +180,15 @@ struct LibraryView: View {
                         
                         ForEach(filteredDocuments) { doc in
                             Button {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                 playbackEngine.presentedPlayerDocument = doc
                             } label: {
                                 LibraryRowView(doc: doc, allFolders: folders, onSoftDelete: softDelete)
                             }
-                            .buttonStyle(.plain)
-                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                            .listRowSeparator(.hidden)
+                            .buttonStyle(ScaleButtonStyle())
                         }
                     }
-                    .listStyle(.plain)
+                    .listStyle(.insetGrouped)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -294,7 +294,13 @@ struct LibraryView: View {
                     var request = URLRequest(url: imageURL)
                     request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
                     request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8", forHTTPHeaderField: "Accept")
-                    if let (data, response) = try? await URLSession.shared.data(for: request),
+                    
+                    let config = URLSessionConfiguration.default
+                    config.waitsForConnectivity = true
+                    config.allowsExpensiveNetworkAccess = false
+                    let session = URLSession(configuration: config)
+                    
+                    if let (data, response) = try? await session.data(for: request),
                        let httpResponse = response as? HTTPURLResponse,
                        httpResponse.statusCode == 200 {
                         coverImageData = data
@@ -358,7 +364,7 @@ struct LibraryRowView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text(doc.title)
-                            .font(.headline)
+                            .font(.body.weight(.semibold))
                             .lineLimit(1)
                         if doc.isPinned {
                             Image(systemName: "pin.fill")

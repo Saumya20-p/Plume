@@ -44,7 +44,7 @@ struct SpeedSettingsView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(UIColor.systemBackground).ignoresSafeArea()
+                Color.clear.ignoresSafeArea()
                 
                 VStack(spacing: 32) {
                     // Header
@@ -68,7 +68,7 @@ struct SpeedSettingsView: View {
                             Image(systemName: "minus")
                                 .font(.system(size: 24, weight: .medium))
                                 .frame(width: 44, height: 44)
-                                .background(Color(UIColor.secondarySystemBackground))
+                                .background(Color.secondary.opacity(0.15))
                                 .clipShape(Circle())
                         }
                         .foregroundStyle(.primary)
@@ -86,7 +86,7 @@ struct SpeedSettingsView: View {
                             Image(systemName: "plus")
                                 .font(.system(size: 24, weight: .medium))
                                 .frame(width: 44, height: 44)
-                                .background(Color(UIColor.secondarySystemBackground))
+                                .background(Color.secondary.opacity(0.15))
                                 .clipShape(Circle())
                         }
                         .foregroundStyle(.primary)
@@ -108,8 +108,6 @@ struct SpeedSettingsView: View {
                     }
                     .padding(.horizontal, 24)
                     
-                    Spacer()
-                    
                     // Auto-Increase Toggle
                     VStack(spacing: 16) {
                         Divider()
@@ -127,6 +125,7 @@ struct SpeedSettingsView: View {
                         .padding(.vertical, 8)
                         .padding(.horizontal, 24)
                     }
+                    .padding(.top, 12)
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
@@ -138,6 +137,8 @@ struct SpeedSettingsView: View {
                 }
             }
         }
+        .presentationBackground(.ultraThinMaterial)
+        .presentationBackgroundInteraction(.enabled(upThrough: .height(420)))
         .presentationDetents([.height(420)])
         .presentationDragIndicator(.visible)
     }
@@ -152,7 +153,7 @@ struct SpeedSettingsView: View {
                 .font(.system(size: 16, weight: .semibold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
-                .background(isSelected ? DesignSystem.accent : Color(UIColor.secondarySystemBackground))
+                .background(isSelected ? DesignSystem.accent : Color.secondary.opacity(0.15))
                 .foregroundStyle(isSelected ? .white : .primary)
                 .clipShape(Capsule())
         }

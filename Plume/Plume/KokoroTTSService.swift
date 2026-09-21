@@ -1,4 +1,5 @@
 public struct AudioChunk {
+    let identity: GeneratedAudioChunkIdentity
     public let fileURL: URL
     public let duration: TimeInterval
     public let timestamps: [WordTimestamp]
@@ -21,15 +22,63 @@ final class EngineBackgroundState: @unchecked Sendable {
     private let condition = NSCondition()
     nonisolated(unsafe) private var paused = false
     nonisolated(unsafe) private var executing = false
+    private var continuations: [CheckedContinuation<Void, Error>] = []
+    
     nonisolated init() {}
     
     nonisolated var isPaused: Bool {
         get { lock.lock(); defer { lock.unlock() }; return paused }
-        set { lock.lock(); paused = newValue; lock.unlock() }
+        set { 
+            lock.lock()
+            paused = newValue
+            let pending = continuations
+            if !paused {
+                continuations.removeAll()
+            }
+            lock.unlock()
+            if !paused {
+                for cont in pending {
+                    cont.resume()
+                }
+            }
+        }
     }
     
     nonisolated var isExecuting: Bool {
         get { lock.lock(); defer { lock.unlock() }; return executing }
+    }
+    
+    nonisolated func cancelWaiters() {
+        lock.lock()
+        let pending = continuations
+        continuations.removeAll()
+        lock.unlock()
+        for cont in pending {
+            cont.resume(throwing: CancellationError())
+        }
+    }
+    
+    nonisolated func waitToStartExecuting() async throws {
+        if tryStartExecuting() { return }
+        try Task.checkCancellation()
+        
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                lock.lock()
+                if !paused {
+                    lock.unlock()
+                    cont.resume()
+                } else {
+                    continuations.append(cont)
+                    lock.unlock()
+                }
+            }
+        } onCancel: {
+            // Signal cancellation
+            self.cancelWaiters()
+        }
+        
+        try await waitToStartExecuting()
     }
     
     nonisolated func tryStartExecuting() -> Bool {
@@ -105,8 +154,12 @@ actor KokoroEngineActor {
     
     private func getPreferredVoiceEmbedding() throws -> MLXArray {
         let voiceName = UserDefaults.standard.string(forKey: "kokoroVoice") ?? "af_heart"
-        guard let embedding = voicesArrays["\(voiceName).npy"] ?? voicesArrays[voiceName] else {
-            throw NSError(domain: "KokoroTTS", code: 3, userInfo: [NSLocalizedDescriptionKey: "Could not find \(voiceName) voice"])
+        return try voiceEmbedding(identifier: voiceName)
+    }
+
+    private func voiceEmbedding(identifier: String) throws -> MLXArray {
+        guard let embedding = voicesArrays["\(identifier).npy"] ?? voicesArrays[identifier] else {
+            throw NSError(domain: "KokoroTTS", code: 3, userInfo: [NSLocalizedDescriptionKey: "Could not find \(identifier) voice"])
         }
         return embedding
     }
@@ -119,6 +172,8 @@ actor KokoroEngineActor {
     
 
     func generateSingleChunk(
+        identity: GeneratedAudioChunkIdentity,
+        voiceIdentifier: String,
         chunkText: String,
         chunkRange: Range<String.Index>,
         fullText: String,
@@ -133,7 +188,7 @@ actor KokoroEngineActor {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("m4a")
         
         if trimmedText.isEmpty {
-            return AudioChunk(fileURL: destinationURL, duration: 0, timestamps: [])
+            return AudioChunk(identity: identity, fileURL: destinationURL, duration: 0, timestamps: [])
         }
         
         let trimmedRange = chunkText.range(of: trimmedText)!
@@ -143,14 +198,8 @@ actor KokoroEngineActor {
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
         
-        // Wait atomically before dispatching to Metal to avoid background SIGABRT
-        while true {
-            if self.isCancelled { break }
-            if backgroundState.tryStartExecuting() {
-                break
-            }
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
+        // Wait efficiently before dispatching to Metal to avoid background SIGABRT
+        try await backgroundState.waitToStartExecuting()
         
         defer {
             backgroundState.stopExecuting()
@@ -164,7 +213,7 @@ actor KokoroEngineActor {
         var chunkTimestamps: [WordTimestamp] = []
         
         let ttsEngine = self.tts
-        let voice = try getPreferredVoiceEmbedding()
+        let voice = try voiceEmbedding(identifier: voiceIdentifier)
         let lang = self.language
         
         try autoreleasepool {
@@ -215,20 +264,21 @@ actor KokoroEngineActor {
             while startIndex < endIndex && abs(audioFloats[startIndex]) < threshold {
                 startIndex += 1
             }
-            // keep 10ms (240 samples) safety padding at start
-            startIndex = max(0, startIndex - 240)
+            let silenceBoundary = startIndex  // True speech start for timestamp math
+            // keep 200ms (4800 samples) safety padding at start
+            startIndex = max(0, startIndex - 4800)
             
             // Trim trailing silence
             while endIndex > startIndex && abs(audioFloats[endIndex - 1]) < threshold {
                 endIndex -= 1
             }
-            // keep 10ms (240 samples) safety padding at end
-            endIndex = min(audioFloats.count, endIndex + 240)
+            // keep 200ms (4800 samples) safety padding at end
+            endIndex = min(audioFloats.count, endIndex + 4800)
             
             let trimmedFloats = Array(audioFloats[startIndex..<endIndex])
             
             // Adjust word timestamps within the chunk based on leading trim
-            let trimOffset = Double(startIndex) / 24000.0
+            let trimOffset = Double(silenceBoundary) / 24000.0
             for i in 0..<chunkTimestamps.count {
                 chunkTimestamps[i].startTime = max(0, chunkTimestamps[i].startTime - trimOffset)
                 chunkTimestamps[i].endTime = max(0, chunkTimestamps[i].endTime - trimOffset)
@@ -260,10 +310,18 @@ actor KokoroEngineActor {
             MLX.Memory.clearCache()
         }
         
-        return AudioChunk(fileURL: destinationURL, duration: chunkDuration, timestamps: chunkTimestamps)
+        return AudioChunk(
+            identity: identity,
+            fileURL: destinationURL,
+            duration: chunkDuration,
+            timestamps: chunkTimestamps
+        )
     }
     func synthesizeToFile(text: String, fileURL: URL, progress: @Sendable (Int, Int) -> Void) async throws -> [WordTimestamp] {
         isCancelled = false
+        // NOTE: This method uses its own sentence merging (350-char limit) which produces
+        // different chunk counts than TextSegmenter.segment(). Do not correlate chunk indices
+        // from this path with the streaming path (AudioChunkGenerator).
         isGenerating = true
         defer { isGenerating = false }
         
@@ -405,18 +463,19 @@ actor KokoroEngineActor {
                 while startIndex < endIndex && abs(audioFloats[startIndex]) < threshold {
                     startIndex += 1
                 }
-                startIndex = max(0, startIndex - 240) // keep 10ms safety padding
+                let silenceBoundary = startIndex  // True speech start for timestamp math
+                startIndex = max(0, startIndex - 4800) // keep 200ms safety padding
                 
                 // Trim trailing silence
                 while endIndex > startIndex && abs(audioFloats[endIndex - 1]) < threshold {
                     endIndex -= 1
                 }
-                endIndex = min(audioFloats.count, endIndex + 240) // keep 10ms safety padding
+                endIndex = min(audioFloats.count, endIndex + 4800) // keep 200ms safety padding
                 
                 let trimmedFloats = Array(audioFloats[startIndex..<endIndex])
                 
                 // Adjust timestamps for the words in THIS chunk only
-                let trimOffset = Double(startIndex) / 24000.0
+                let trimOffset = Double(silenceBoundary) / 24000.0
                 for i in (0..<allTimestamps.count).reversed() {
                     if allTimestamps[i].startTime >= currentTimeOffset {
                         allTimestamps[i].startTime = max(currentTimeOffset, allTimestamps[i].startTime - trimOffset)
@@ -459,8 +518,10 @@ actor KokoroEngineActor {
 }
 
 public class AudioChunkGenerator {
-    private let document: Document
+    private let session: PlaybackGenerationSession
     private let text: String
+    private let cacheDirectory: URL
+    private let voiceIdentifier: String
     private let engineActor: KokoroEngineActor
     private var chunks: [TextSegmenter.Chunk] = []
     private var currentIndex: Int = 0
@@ -468,12 +529,38 @@ public class AudioChunkGenerator {
     private let format: AVAudioFormat
     private let settings: [String: Any]
     
-    init(document: Document, engineActor: KokoroEngineActor, startChunkIndex: Int) throws {
-        self.document = document
+    init(
+        document: Document,
+        session: PlaybackGenerationSession,
+        engineActor: KokoroEngineActor,
+        startChunkIndex: Int
+    ) throws {
+        guard startChunkIndex >= 0 else {
+            throw NSError(
+                domain: "KokoroTTS",
+                code: 10,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid negative chunk index"]
+            )
+        }
+
+        guard
+            session.documentID == document.id,
+            case .kokoro(let voiceIdentifier) = session.voice
+        else {
+            throw NSError(
+                domain: "KokoroTTS",
+                code: 9,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid Kokoro generation session"]
+            )
+        }
+
+        self.session = session
         self.text = document.bodyText
+        self.cacheDirectory = document.audioCacheDirectory
+        self.voiceIdentifier = voiceIdentifier
         self.engineActor = engineActor
         
-        self.chunks = TextSegmenter.segment(text: self.text)
+        self.chunks = TextSegmenter.segment(documentID: session.documentID, text: self.text)
         self.currentIndex = startChunkIndex
         
         let sampleRate = Double(KokoroTTS.Constants.samplingRate)
@@ -499,15 +586,19 @@ public class AudioChunkGenerator {
             return try await nextChunk() // skip empty and recurse
         }
         
-        let voiceName = UserDefaults.standard.string(forKey: "kokoroVoice") ?? "af_heart"
+        let identity = GeneratedAudioChunkIdentity(session: session, segmentID: chunk.id)
+        let destinationURL = cacheDirectory
+            .appendingPathComponent("chunk_\(indexForChunk)_\(voiceIdentifier).m4a")
         let resultChunk = try await engineActor.generateSingleChunk(
+            identity: identity,
+            voiceIdentifier: voiceIdentifier,
             chunkText: chunk.text,
             chunkRange: chunk.range,
             fullText: self.text,
             currentTimeOffset: self.currentTimeOffset,
             format: self.format,
             settings: self.settings,
-            destinationURL: document.chunkURL(for: indexForChunk, voice: voiceName)
+            destinationURL: destinationURL
         )
         
         self.currentTimeOffset += resultChunk.duration
@@ -561,7 +652,6 @@ class KokoroTTSService: ObservableObject {
         do {
             let audioSession = AVAudioSession.sharedInstance()
             try audioSession.setCategory(.playback, mode: .default)
-            try audioSession.setActive(true)
         } catch {
             Log.tts.error("Failed to set up AVAudioSession: \(error.localizedDescription, privacy: .public)")
         }
@@ -667,7 +757,11 @@ class KokoroTTSService: ObservableObject {
     }
     
 
-    func synthesizeGenerator(document: Document, startChunkIndex: Int) async throws -> AudioChunkGenerator {
+    func synthesizeGenerator(
+        document: Document,
+        session: PlaybackGenerationSession,
+        startChunkIndex: Int
+    ) async throws -> AudioChunkGenerator {
         if !self.isModelLoaded {
             try await self.loadModel()
         }
@@ -679,7 +773,12 @@ class KokoroTTSService: ObservableObject {
         // Reset cancellation state from any previous session before starting
         await engineActor.setCancelled(false)
         
-        return try AudioChunkGenerator(document: document, engineActor: engineActor, startChunkIndex: startChunkIndex)
+        return try AudioChunkGenerator(
+            document: document,
+            session: session,
+            engineActor: engineActor,
+            startChunkIndex: startChunkIndex
+        )
     }
 
     func playText(_ text: String) async throws {

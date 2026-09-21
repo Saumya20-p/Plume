@@ -25,6 +25,9 @@ public class PlaybackCoordinator: ObservableObject {
         let context = ModelContext(container)
         let descriptor = FetchDescriptor<Document>(predicate: #Predicate { $0.id == nextID })
         if let docs = try? context.fetch(descriptor), let nextDoc = docs.first {
+            if AudioPlaybackEngine.shared.isPlayerViewPresented {
+                AudioPlaybackEngine.shared.presentedPlayerDocument = nextDoc
+            }
             if nextDoc.audioFileURL != nil {
                 AudioPlaybackEngine.shared.load(document: nextDoc)
                 AudioPlaybackEngine.shared.play()

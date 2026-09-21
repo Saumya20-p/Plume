@@ -65,15 +65,34 @@ public class VariableBlurUIView: UIView {
         fatalError("init(coder:) has not been implemented")
     }
     
+    private var lastSize: CGSize = .zero
+    private var lastDirection: VariableBlurDirection?
+    private var lastMaxBlurRadius: CGFloat?
+    
     public override func layoutSubviews() {
         super.layoutSubviews()
-        applyVariableBlur()
+        
+        let newSize = bounds.size
+        if newSize != lastSize {
+            applyVariableBlur()
+            lastSize = newSize
+        }
     }
     
     func update(direction: VariableBlurDirection, maxBlurRadius: CGFloat) {
+        if self.direction == direction && self.maxBlurRadius == maxBlurRadius && lastDirection != nil {
+            return
+        }
+        
         self.direction = direction
         self.maxBlurRadius = maxBlurRadius
-        applyVariableBlur()
+        self.lastDirection = direction
+        self.lastMaxBlurRadius = maxBlurRadius
+        
+        // Ensure we don't apply if size is 0 (layoutSubviews will handle it later)
+        if bounds.size != .zero {
+            applyVariableBlur()
+        }
     }
     
     // MARK: - Private

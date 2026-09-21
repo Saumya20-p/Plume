@@ -10,7 +10,7 @@ struct RecentlyDeletedView: View {
             ForEach(deletedDocuments) { doc in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(doc.title)
-                        .font(.headline)
+                        .font(.body.weight(.semibold))
                     
                     if let deletedAt = doc.deletedAt {
                         let daysRemaining = max(0, 30 - Calendar.current.dateComponents([.day], from: deletedAt, to: Date()).day!)

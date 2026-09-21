@@ -286,8 +286,13 @@ struct AddMenuSheet: View {
 
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
             .padding(.top)
         }
+        .presentationBackground(.ultraThinMaterial)
+        .presentationBackgroundInteraction(.enabled(upThrough: .height(240)))
+        .presentationDetents([.height(240)])
     }
 }
 
@@ -309,6 +314,7 @@ struct AddMenuRow: View {
             .foregroundStyle(.primary)
             .padding(.vertical, 8)
         }
+        .listRowBackground(Color.clear)
     }
 }
 
@@ -318,17 +324,26 @@ struct MiniPlayerView: View {
     
     var body: some View {
         HStack {
-            Image(systemName: "book.pages.fill")
-                .resizable()
-                .scaledToFit()
-                .padding(8)
-                .frame(width: 48, height: 48)
-                .background(Color.secondary.opacity(0.2))
-                .cornerRadius(8)
+            if let data = document.coverImageData, let uiImage = UIImage(data: data) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(UIColor.secondarySystemFill))
+                    .frame(width: 48, height: 48)
+                    .overlay(
+                        Image(systemName: "book.closed.fill")
+                            .foregroundStyle(.tertiary)
+                            .font(.body)
+                    )
+            }
                 
             VStack(alignment: .leading, spacing: 2) {
                 Text(document.title)
-                    .font(.headline)
+                    .font(.body.weight(.semibold))
                     .lineLimit(1)
                 Text(playbackEngine.isPlaying ? "Playing..." : "Paused")
                     .font(.subheadline)
@@ -342,10 +357,11 @@ struct MiniPlayerView: View {
                     .font(.title2)
                     .foregroundStyle(.primary)
             }
+            .tint(.primary)
             .padding(.trailing, 8)
         }
         .padding(8)
-        .background(Color(UIColor.secondarySystemBackground).opacity(0.95))
+        .background(.ultraThinMaterial)
         .cornerRadius(16)
         .shadow(radius: 10)
         .contentShape(Rectangle())

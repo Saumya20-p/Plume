@@ -6,16 +6,21 @@ import SwiftUI
 public class PlaybackQueueManager: ObservableObject {
     public static let shared = PlaybackQueueManager()
     
-    @Published public var queue: [UUID] = [] {
-        didSet {
-            saveQueue()
-        }
-    }
+    @Published public var queue: [UUID] = []
     
     private let userDefaultsKey = "com.saumyapatel.Plume.playbackQueue"
+    private var cancellables = Set<AnyCancellable>()
     
     private init() {
         loadQueue()
+        
+        $queue
+            .dropFirst()
+            .debounce(for: .seconds(1.0), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.performSaveQueue()
+            }
+            .store(in: &cancellables)
     }
     
     private func loadQueue() {
@@ -25,7 +30,7 @@ public class PlaybackQueueManager: ObservableObject {
         }
     }
     
-    private func saveQueue() {
+    private func performSaveQueue() {
         if let data = try? JSONEncoder().encode(queue) {
             UserDefaults.standard.set(data, forKey: userDefaultsKey)
         }
@@ -46,6 +51,13 @@ public class PlaybackQueueManager: ObservableObject {
     
     public func remove(_ id: UUID) {
         queue.removeAll { $0 == id }
+    }
+    
+    public func skipTo(_ id: UUID) {
+        if let index = queue.firstIndex(of: id) {
+            // Keep only the items that come AFTER the tapped item
+            queue = Array(queue.dropFirst(index + 1))
+        }
     }
     
     public func move(from source: IndexSet, to destination: Int) {
