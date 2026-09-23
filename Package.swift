@@ -21,7 +21,9 @@ let package = Package(
                 "PlaybackVoice.swift",
                 "PlaybackGenerationIdentity.swift",
                 "PlaybackSessionContract.swift",
-                "AppleSpeechVoiceCatalog.swift"
+                "AppleSpeechVoiceCatalog.swift",
+                "AudioProducerProtocol.swift",
+                "AppleSpeechProducer.swift"
             ]
         ),
         .testTarget(
@@ -31,7 +33,8 @@ let package = Package(
             exclude: ["KokoroPlaybackFoundationTests.swift", "PlumeTests.swift"],
             sources: [
                 "PlaybackVoiceFoundationTests.swift",
-                "PlaybackSessionContractTests.swift"
+                "PlaybackSessionContractTests.swift",
+                "AppleSpeechProducerTests.swift"
             ]
         )
     ]
