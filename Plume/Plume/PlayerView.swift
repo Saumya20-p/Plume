@@ -449,111 +449,12 @@ struct VoiceSelectionSheetView: View {
     let document: Document
     @ObservedObject var playbackEngine: AudioPlaybackEngine
     
-    @Environment(\.dismiss) private var dismiss
-    @AppStorage("kokoroVoice") private var currentVoiceId = "af_heart"
-    
-    @State private var previewPlayer: AVAudioPlayer?
-    
     var body: some View {
         NavigationStack {
-            List {
-                ForEach(allVoiceCategories) { category in
-                    Section(header: Text(category.name)) {
-                        ForEach(category.voices) { voice in
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(voice.name)
-                                        .font(.body)
-                                    Text(voice.gender)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                
-                                Button {
-                                    playPreview(for: voice.id)
-                                } label: {
-                                    Image(systemName: "speaker.wave.2.fill")
-                                        .foregroundStyle(DesignSystem.accent)
-                                        .padding(8)
-                                        .background(DesignSystem.accent.opacity(0.1))
-                                        .clipShape(Circle())
-                                }
-                                .buttonStyle(.plain)
-                                
-                                if voice.id == currentVoiceId {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(DesignSystem.accent)
-                                        .padding(.leading, 8)
-                                }
-                            }
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                if voice.id != currentVoiceId {
-                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                    currentVoiceId = voice.id
-                                    
-                                    let charIndex = PlaybackProgress.shared.currentWord?.rangeLocation ?? document.lastReadCharIndex
-                                    
-                                    previewPlayer?.stop()
-                                    AudioGenerationManager.shared.cancelCurrentGeneration()
-                                    playbackEngine.clearMemory()
-                                    
-                                    // Delete existing files
-                                    if let url = document.audioFileURL {
-                                        try? FileManager.default.removeItem(at: url)
-                                    }
-                                    
-                                    let cacheDir = document.audioCacheDirectory
-                                    if let files = try? FileManager.default.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: nil) {
-                                        for file in files where file.pathExtension == "m4a" {
-                                            try? FileManager.default.removeItem(at: file)
-                                        }
-                                    }
-                                    
-                                    // Wait for cancellation to complete, then regenerate
-                                    Task { @MainActor in
-                                        await AudioGenerationManager.shared.cancellationTask?.value
-                                        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms safety
-                                        playbackEngine.seek(toCharIndex: charIndex)
-                                    }
-                                    dismiss()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .background(Color.clear)
-            .navigationTitle("Select Voice")
-            .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        previewPlayer?.stop()
-                        dismiss()
-                    }
-                }
-            }
+            VoiceSettingsView(document: document, playbackEngine: playbackEngine)
         }
         .presentationBackground(.ultraThinMaterial)
         .presentationBackgroundInteraction(.enabled(upThrough: .large))
-        .onDisappear {
-            previewPlayer?.stop()
-        }
-    }
-    
-    private func playPreview(for voiceId: String) {
-        previewPlayer?.stop()
-        guard let url = Bundle.main.url(forResource: voiceId, withExtension: "m4a") else { return }
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-            try AVAudioSession.sharedInstance().setActive(true)
-            previewPlayer = try AVAudioPlayer(contentsOf: url)
-            previewPlayer?.play()
-        } catch {
-            print("Failed to play preview: \(error)")
-        }
     }
 }
+

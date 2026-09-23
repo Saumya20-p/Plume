@@ -57,6 +57,10 @@ public class AudioPlaybackEngine: ObservableObject {
         coordinator.isAppleActive
     }
     
+    var currentSnapshot: PlaybackSessionSnapshot? {
+        coordinator.snapshot
+    }
+    
     private var queuePlayer: AVQueuePlayer?
     
     public var chunks: [PlayedChunk] = []
@@ -300,15 +304,7 @@ public class AudioPlaybackEngine: ObservableObject {
         self.currentDocument = document
         
         // Initialize coordinator session
-        let preferences: VoicePreferences
-        if let testVoiceID = PlaybackRoutingCoordinator.testAppleVoiceIdentifier {
-            preferences = VoicePreferences(
-                primary: .apple(identifier: testVoiceID),
-                fallbackAppleVoiceIdentifier: testVoiceID
-            )
-        } else {
-            preferences = VoicePreferencesStore().load()
-        }
+        let preferences = VoicePreferencesStore().load()
         let snapshot = PlaybackSessionSnapshot(documentID: document.id, preferences: preferences)
         let resumeCursor = document.lastReadCharIndex > 0 ? PlaybackSourceCursor(segmentOrdinal: 0, globalUTF16Offset: document.lastReadCharIndex) : nil
         _ = coordinator.begin(
@@ -420,9 +416,7 @@ public class AudioPlaybackEngine: ObservableObject {
     public func clearMemory() {
         recordListeningSession()
         saveDocumentProgress()
-        if coordinator.isAppleActive {
-            coordinator.cancel()
-        }
+        coordinator.cancel()
         generationGate.invalidate()
         queuePlayer?.pause()
         queuePlayer?.removeAllItems()

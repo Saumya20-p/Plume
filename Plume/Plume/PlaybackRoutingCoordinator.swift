@@ -24,12 +24,6 @@ final class PlaybackRoutingCoordinator {
     private var appleVoice: AVSpeechSynthesisVoice?
     private var speechRateMultiplier: Float = 1.0
 
-    // MARK: - Temporary Test Hook (Phase 3)
-
-    /// Test hook for testing the Apple engine on physical devices.
-    /// When non-nil, forces the engine to route playback using Apple Speech with this voice identifier.
-    /// Samantha (or device system voice) allows immediate verification.
-    static var testAppleVoiceIdentifier: String? = "com.apple.voice.compact.en-US.Samantha"
 
     // MARK: - Callbacks
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import AVFoundation
 import os
 
 struct SettingsView: View {
@@ -10,6 +11,7 @@ struct SettingsView: View {
     @State private var showingClearCacheAlert = false
     @State private var cacheClearedMessage: String?
     @State private var cacheSizeString: String = "Calculating..."
+    @State private var voicePreferences: VoicePreferences = VoicePreferencesStore().load()
     
     @AppStorage("deleteFolderContents") private var deleteFolderContents: Bool = false
     
@@ -41,11 +43,13 @@ struct SettingsView: View {
                 }
                 
                 Section(header: Text("Voice")) {
-                    HStack {
-                        Text("Selected Voice")
-                        Spacer()
-                        Text("af_heart")
-                            .foregroundStyle(.secondary)
+                    NavigationLink(destination: VoiceSettingsView()) {
+                        HStack {
+                            Text("Voices")
+                            Spacer()
+                            Text(voiceSummaryText)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 
@@ -100,6 +104,20 @@ struct SettingsView: View {
             .task(id: documents.count) {
                 await calculateCacheSize()
             }
+            .onAppear {
+                voicePreferences = VoicePreferencesStore().load()
+            }
+        }
+    }
+    
+    private var voiceSummaryText: String {
+        switch voicePreferences.primary {
+        case .kokoro(let id):
+            let name = allVoiceCategories.flatMap(\.voices).first(where: { $0.id == id })?.name ?? id
+            return "\(name) (Kokoro)"
+        case .apple(let id):
+            let name = AVSpeechSynthesisVoice(identifier: id)?.name ?? id
+            return "\(name) (Apple)"
         }
     }
     

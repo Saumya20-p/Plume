@@ -678,6 +678,14 @@ class KokoroTTSService: ObservableObject {
         }
     }
     
+    func generatePreview(for voiceId: String, outputURL: URL) async throws {
+        try await loadModel()
+        guard let engineActor else {
+            throw NSError(domain: "KokoroTTS", code: 1, userInfo: [NSLocalizedDescriptionKey: "Kokoro engine actor is nil"])
+        }
+        try await engineActor.generatePreview(for: voiceId, outputURL: outputURL)
+    }
+    
     func waitForGPUIdle() async {
         await engineActor?.waitForIdle()
     }
@@ -924,5 +932,35 @@ extension KokoroEngineActor {
         }
         
         print("Done generating all previews in: \(docsDir.path)")
+    }
+    
+    public func generatePreview(for voiceId: String, outputURL: URL) throws {
+        let text = "Hi, I am ready to read."
+        let sampleRate = Double(KokoroTTS.Constants.samplingRate)
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 64000
+        ]
+        
+        guard let embedding = voicesArrays["\(voiceId).npy"] ?? voicesArrays[voiceId] else {
+            throw NSError(domain: "KokoroTTS", code: 3, userInfo: [NSLocalizedDescriptionKey: "Voice \(voiceId) not found"])
+        }
+        
+        let result = try tts.generateAudio(voice: embedding, language: language, text: text)
+        let audioFloats = result.0
+        
+        guard let bufferFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: bufferFormat, frameCapacity: AVAudioFrameCount(audioFloats.count)) else {
+            throw NSError(domain: "KokoroTTS", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to create PCM buffer"])
+        }
+        buffer.frameLength = buffer.frameCapacity
+        for i in 0..<audioFloats.count {
+            buffer.floatChannelData![0][i] = audioFloats[i]
+        }
+        
+        let audioFile = try AVAudioFile(forWriting: outputURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        try audioFile.write(from: buffer)
     }
 }
