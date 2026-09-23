@@ -51,7 +51,7 @@ public class AudioPlaybackEngine: ObservableObject {
     public static let shared = AudioPlaybackEngine()
     public let progress = PlaybackProgress.shared
     
-    private let coordinator = PlaybackRoutingCoordinator()
+    let coordinator = PlaybackRoutingCoordinator()
     
     public var isAppleActive: Bool {
         coordinator.isAppleActive
@@ -71,6 +71,7 @@ public class AudioPlaybackEngine: ObservableObject {
     private var interruptionObserverToken: Any?
     private var routeChangeObserverToken: Any?
     private var didEnterBackgroundObserverToken: Any?
+    private var willEnterForegroundObserverToken: Any?
     private var userDefaultsObserverToken: Any?
     private var wasPlayingBeforeInterruption: Bool = false
     private var lastProgressSaveTime: TimeInterval = 0
@@ -150,6 +151,7 @@ public class AudioPlaybackEngine: ObservableObject {
         self.basePlaybackSpeed = savedSpeed == 0 ? 1.0 : Float(savedSpeed)
         self.playbackRate = self.basePlaybackSpeed
         
+        coordinator.playbackEngine = self
         setupRemoteCommandCenter()
         setupAudioSessionObservers()
         setupCoordinatorCallbacks()
@@ -171,6 +173,9 @@ public class AudioPlaybackEngine: ObservableObject {
             NotificationCenter.default.removeObserver(token)
         }
         if let token = didEnterBackgroundObserverToken {
+            NotificationCenter.default.removeObserver(token)
+        }
+        if let token = willEnterForegroundObserverToken {
             NotificationCenter.default.removeObserver(token)
         }
         if let token = userDefaultsObserverToken {
@@ -227,6 +232,10 @@ public class AudioPlaybackEngine: ObservableObject {
             Task {
                 PlaybackCoordinator.shared.advanceNext()
             }
+        }
+
+        coordinator.onPerformHandback = { [weak self] chunks, _ in
+            self?.resumeFromHandback(chunks: chunks, session: nil)
         }
     }
     
@@ -290,6 +299,7 @@ public class AudioPlaybackEngine: ObservableObject {
     }
 
     func load(document: Document, generationSession: PlaybackGenerationSession?) {
+        cancelSpeculativeHandback()
         if let generationSession {
             generationGate.activate(generationSession)
         } else {
@@ -384,6 +394,7 @@ public class AudioPlaybackEngine: ObservableObject {
     }
     
     public func pause() {
+        cancelSpeculativeHandback()
         if coordinator.isAppleActive {
             coordinator.pause()
             isPlaying = false
@@ -465,6 +476,7 @@ public class AudioPlaybackEngine: ObservableObject {
     }
     
     public func resetAndSeek(to targetTime: TimeInterval) {
+        cancelSpeculativeHandback()
         guard currentDocument != nil else { return }
         
         if coordinator.isAppleActive {
@@ -492,6 +504,7 @@ public class AudioPlaybackEngine: ObservableObject {
     }
     
     public func seek(to targetTime: TimeInterval) {
+        cancelSpeculativeHandback()
         seekDebounceTimer?.invalidate()
         let timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
             Task { @MainActor in
@@ -503,6 +516,7 @@ public class AudioPlaybackEngine: ObservableObject {
     }
 
     private func performSeek(to targetTime: TimeInterval) {
+        cancelSpeculativeHandback()
         recordListeningSession()
         saveDocumentProgress()
         PlaybackProgress.shared.currentWord = nil
@@ -516,6 +530,9 @@ public class AudioPlaybackEngine: ObservableObject {
             self.currentTime = safeTargetTime
             if isPlaying {
                 wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+                if UIApplication.shared.applicationState != .background {
+                    triggerSpeculativeHandbackPreparation(for: doc)
+                }
             }
             updateNowPlayingPlaybackInfo()
             return
@@ -611,6 +628,7 @@ public class AudioPlaybackEngine: ObservableObject {
     }
 
     public func seek(toCharIndex charIndex: Int) {
+        cancelSpeculativeHandback()
         seekDebounceTimer?.invalidate()
         let timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
             Task { @MainActor in
@@ -622,6 +640,7 @@ public class AudioPlaybackEngine: ObservableObject {
     }
     
     private func performSeek(toCharIndex charIndex: Int) {
+        cancelSpeculativeHandback()
         recordListeningSession()
         saveDocumentProgress()
         PlaybackProgress.shared.currentWord = nil
@@ -633,6 +652,9 @@ public class AudioPlaybackEngine: ObservableObject {
             self.currentTime = coordinator.estimatedCurrentTime
             if isPlaying {
                 wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+                if UIApplication.shared.applicationState != .background {
+                    triggerSpeculativeHandbackPreparation(for: doc)
+                }
             }
             updateNowPlayingPlaybackInfo()
             return
@@ -897,10 +919,19 @@ public class AudioPlaybackEngine: ObservableObject {
         }
 
         didEnterBackgroundObserverToken = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-            guard let self = self else { return }
-            guard !self.coordinator.isAppleActive, self.currentDocument != nil else { return }
-            Log.audio.info("Application entered background; triggering fallback from Kokoro to Apple Speech.")
-            self.triggerFallbackToAppleSpeech(reason: "Application entered background")
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.cancelSpeculativeHandback()
+                guard !self.coordinator.isAppleActive, self.currentDocument != nil else { return }
+                Log.audio.info("Application entered background; triggering fallback from Kokoro to Apple Speech.")
+                self.triggerFallbackToAppleSpeech(reason: "Application entered background")
+            }
+        }
+
+        willEnterForegroundObserverToken = NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleWillEnterForeground()
+            }
         }
     }
     
@@ -999,6 +1030,7 @@ public class AudioPlaybackEngine: ObservableObject {
     }
 
     public func triggerFallbackToAppleSpeech(reason: String) {
+        cancelSpeculativeHandback()
         guard !coordinator.isAppleActive, let doc = currentDocument else { return }
         
         Log.audio.warning("Triggering fallback to Apple Speech. Reason: \(reason, privacy: .public)")
@@ -1042,6 +1074,96 @@ public class AudioPlaybackEngine: ObservableObject {
             }
             updateNowPlayingPlaybackInfo()
         }
+    }
+
+    // MARK: - Speculative Foreground Handback (Phase 6)
+
+    @objc private func handleWillEnterForeground() {
+        guard coordinator.isFallbackActive, let doc = currentDocument, isPlaying else { return }
+        Log.audio.info("Application returning to foreground during Apple Speech fallback; initiating speculative handback preparation.")
+        triggerSpeculativeHandbackPreparation(for: doc)
+    }
+
+    func triggerSpeculativeHandbackPreparation(for doc: Document) {
+        guard coordinator.isFallbackActive else { return }
+        
+        let targetSegmentIndex = coordinator.currentOrUpcomingSegmentIndex
+        guard targetSegmentIndex < coordinator.segmentsCount else {
+            Log.audio.info("Speculative handback: already at or past the end of document segments.")
+            return
+        }
+
+        Log.audio.info("Starting speculative preparation for document \(doc.id) from segment \(targetSegmentIndex).")
+        AudioGenerationManager.shared.startSpeculativePreparation(
+            document: doc,
+            playbackEngine: self,
+            startChunkIndex: targetSegmentIndex
+        )
+    }
+
+    func cancelSpeculativeHandback() {
+        AudioGenerationManager.shared.cancelSpeculativePreparation()
+        coordinator.cancelPendingHandback()
+    }
+
+    func resumeFromHandback(chunks: [AudioChunk], session: PlaybackGenerationSession?) {
+        guard let doc = currentDocument, !chunks.isEmpty else { return }
+        Log.audio.info("AudioPlaybackEngine resuming Kokoro playback from handback with \(chunks.count) chunk(s).")
+
+        // 1. Activate session gate if provided
+        if let session {
+            generationGate.activate(session)
+        }
+
+        // 2. Tear down any residual Apple Speech playback and clear old Kokoro items
+        queuePlayer?.pause()
+        queuePlayer?.removeAllItems()
+        self.chunks.removeAll()
+
+        // 3. Set the virtualBaseOffset to current progress or the start of the first chunk
+        let currentEstimated = coordinator.estimatedCurrentTime
+        self.virtualBaseOffset = currentEstimated
+        self.currentTime = currentEstimated
+
+        // 4. Transform AudioChunks into PlayedChunks and insert into queuePlayer
+        var playedChunks: [PlayedChunk] = []
+        var runningOffset = currentEstimated
+
+        for chunk in chunks {
+            let playedChunk = PlayedChunk(
+                chunk: chunk,
+                globalStartTime: runningOffset
+            )
+            playedChunks.append(playedChunk)
+            runningOffset += chunk.duration
+            queuePlayer?.insert(AVPlayerItem(url: chunk.fileURL), after: nil)
+        }
+
+        self.chunks = playedChunks
+        self.duration = runningOffset
+
+        // 5. Resume playback if desired
+        let shouldPlay = self.isPlaying || (self.coordinator.contract?.desiredPlayIntent == .playing)
+        isGenerationActive = true
+        if shouldPlay {
+            queuePlayer?.play()
+            queuePlayer?.rate = playbackRate
+            isPlaying = true
+            wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+        } else {
+            queuePlayer?.pause()
+            isPlaying = false
+        }
+        updateNowPlayingPlaybackInfo()
+
+        // 6. Resume continuous Kokoro generation for remaining chunks
+        let nextChunkIndex = (chunks.last?.identity.segmentID.ordinal ?? 0) + 1
+        Log.audio.info("Resuming continuous Kokoro generation from segment \(nextChunkIndex).")
+        AudioGenerationManager.shared.generate(
+            document: doc,
+            playbackEngine: self,
+            startChunkIndex: nextChunkIndex
+        )
     }
 
 }

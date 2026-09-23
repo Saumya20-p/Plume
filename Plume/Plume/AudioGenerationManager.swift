@@ -5,6 +5,11 @@ import os
 import AVFoundation
 import CoreMedia
 
+public enum GenerationMode: Sendable {
+    case standard
+    case preparationOnly
+}
+
 @MainActor
 public class AudioGenerationManager: ObservableObject {
     public static let shared = AudioGenerationManager()
@@ -12,18 +17,22 @@ public class AudioGenerationManager: ObservableObject {
     @Published public var generatingDocumentIDs: Set<UUID> = []
     @Published public var lastError: String?
     @Published public var generationProgress: String?
+    @Published public private(set) var generationMode: GenerationMode = .standard
+    @Published public private(set) var isSpeculativeGenerating: Bool = false
     
     private let highWatermarkSeconds: TimeInterval = 120.0  // ~2 min buffer ahead
     private let lowWatermarkSeconds: TimeInterval = 90.0    // resume threshold
     
     /// The in-flight generation Task, stored so it can be cancelled.
     private var generationTask: Task<Void, Never>?
+    private var speculativeGenerationTask: Task<Void, Never>?
+    private var speculativeSessionID: UUID?
     internal var cancellationTask: Task<Void, Never>?
     private var generationRunState = PlaybackGenerationRunState()
     private weak var activePlaybackEngine: AudioPlaybackEngine?
     
     public var isGeneratingAny: Bool {
-        !generatingDocumentIDs.isEmpty
+        !generatingDocumentIDs.isEmpty || isSpeculativeGenerating
     }
     
     private var cancellables = Set<AnyCancellable>()
@@ -64,6 +73,8 @@ public class AudioGenerationManager: ObservableObject {
     
     
     public func generate(document: Document, playbackEngine: AudioPlaybackEngine, startChunkIndex: Int = 0) {
+        cancelSpeculativePreparation()
+
         // Guard against duplicate taps
         guard !generatingDocumentIDs.contains(document.id) else { return }
         
@@ -183,7 +194,9 @@ public class AudioGenerationManager: ObservableObject {
                     
                     guard playbackEngine.enqueue(chunk: updatedChunk) else { break }
                     if isFirst {
-                        playbackEngine.play()
+                        if startChunkIndex == 0 && playbackEngine.coordinator.contract?.desiredPlayIntent != .paused {
+                            playbackEngine.play()
+                        }
                         isFirst = false
                     }
                 }
@@ -198,6 +211,8 @@ public class AudioGenerationManager: ObservableObject {
     }
 
     public func cancelCurrentGeneration() {
+        cancelSpeculativePreparation()
+
         let cancelledSessionID = generationRunState.invalidateCurrent()
         let cancelledDocumentID = generatingDocumentIDs.first
         let playbackEngine = activePlaybackEngine
@@ -219,6 +234,129 @@ public class AudioGenerationManager: ObservableObject {
 
         if let cancelledSessionID {
             playbackEngine?.finishGeneration(sessionID: cancelledSessionID)
+        }
+    }
+
+    // MARK: - Speculative Preparation (Phase 6 Handback)
+
+    /// Starts speculative generation of audio chunks for upcoming sentences without playing them.
+    /// Chunks are staged into `PlaybackRoutingCoordinator` to allow an atomic handback swap
+    /// once Apple Speech finishes its current sentence.
+    public func startSpeculativePreparation(
+        document: Document,
+        playbackEngine: AudioPlaybackEngine,
+        startChunkIndex: Int
+    ) {
+        guard !isGeneratingAny else { return }
+        cancelSpeculativePreparation()
+
+        guard startChunkIndex >= 0 else { return }
+
+        isSpeculativeGenerating = true
+        generationMode = .preparationOnly
+        generationProgress = "Speculatively preparing Kokoro..."
+        activePlaybackEngine = playbackEngine
+
+        let documentID = document.id
+        let session = KokoroGenerationSessionFactory.make(
+            documentID: documentID,
+            defaults: .standard
+        )
+        speculativeSessionID = session.id
+
+        speculativeGenerationTask = Task { @MainActor [weak self, weak playbackEngine] in
+            guard let self = self, let playbackEngine = playbackEngine else { return }
+            defer {
+                self.isSpeculativeGenerating = false
+                self.speculativeGenerationTask = nil
+                self.generationMode = .standard
+                self.generationProgress = nil
+            }
+
+            do {
+                let generator = try await KokoroTTSService.shared.synthesizeGenerator(
+                    document: document,
+                    session: session,
+                    startChunkIndex: startChunkIndex
+                )
+
+                var currentChunkIndex = startChunkIndex
+                while !Task.isCancelled && playbackEngine.isFallbackActive {
+                    guard let chunk = try await generator.nextChunk() else {
+                        break
+                    }
+                    guard !Task.isCancelled, playbackEngine.isFallbackActive else { break }
+
+                    let exactDuration = try await AVURLAsset(url: chunk.fileURL).load(.duration).seconds
+                    guard !Task.isCancelled, playbackEngine.isFallbackActive else { break }
+
+                    let updatedChunk = AudioChunk(
+                        identity: chunk.identity,
+                        fileURL: chunk.fileURL,
+                        duration: exactDuration,
+                        timestamps: chunk.timestamps
+                    )
+
+                    playbackEngine.coordinator.stageHandbackChunk(updatedChunk, session: session)
+                    currentChunkIndex += 1
+
+                    // If Apple Speech is not speaking right now, trigger handback immediately
+                    if !playbackEngine.coordinator.isAppleSpeaking {
+                        playbackEngine.coordinator.triggerHandback()
+                        break
+                    }
+
+                    // Buffer at most 2 speculative chunks ahead
+                    if playbackEngine.coordinator.stagedHandbackChunks.count >= 2 {
+                        break
+                    }
+                }
+            } catch {
+                if !(error is CancellationError) {
+                    Log.tts.error("Failed speculative synthesis: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
+
+    /// Fetches a single audio chunk speculatively without streaming or enqueuing it.
+    public func generateSpeculativeChunk(
+        document: Document,
+        chunkIndex: Int
+    ) async throws -> AudioChunk? {
+        let session = KokoroGenerationSessionFactory.make(
+            documentID: document.id,
+            defaults: .standard
+        )
+        let generator = try await KokoroTTSService.shared.synthesizeGenerator(
+            document: document,
+            session: session,
+            startChunkIndex: chunkIndex
+        )
+        guard let chunk = try await generator.nextChunk() else {
+            return nil
+        }
+        let exactDuration = try await AVURLAsset(url: chunk.fileURL).load(.duration).seconds
+        return AudioChunk(
+            identity: chunk.identity,
+            fileURL: chunk.fileURL,
+            duration: exactDuration,
+            timestamps: chunk.timestamps
+        )
+    }
+
+    /// Cancels any in-flight speculative preparation and resets preparation state.
+    public func cancelSpeculativePreparation() {
+        guard isSpeculativeGenerating || speculativeGenerationTask != nil else { return }
+        Log.tts.info("Canceling speculative Kokoro generation.")
+        speculativeGenerationTask?.cancel()
+        speculativeGenerationTask = nil
+        isSpeculativeGenerating = false
+        generationMode = .standard
+        speculativeSessionID = nil
+        generationProgress = nil
+        cancellationTask = Task {
+            await KokoroTTSService.shared.cancelGeneration()
         }
     }
 
