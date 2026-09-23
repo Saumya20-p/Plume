@@ -51,6 +51,12 @@ public class AudioPlaybackEngine: ObservableObject {
     public static let shared = AudioPlaybackEngine()
     public let progress = PlaybackProgress.shared
     
+    private let coordinator = PlaybackRoutingCoordinator()
+    
+    public var isAppleActive: Bool {
+        coordinator.isAppleActive
+    }
+    
     private var queuePlayer: AVQueuePlayer?
     
     public var chunks: [PlayedChunk] = []
@@ -62,7 +68,7 @@ public class AudioPlaybackEngine: ObservableObject {
     private var routeChangeObserverToken: Any?
     private var wasPlayingBeforeInterruption: Bool = false
     private var lastProgressSaveTime: TimeInterval = 0
-    private var currentSessionStartTime: TimeInterval?
+    private var wallClockSessionStartTime: TimeInterval?
     private var currentSeekTask: Task<Void, Never>? = nil
     private var generationGate = PlaybackGenerationGate()
     
@@ -140,10 +146,63 @@ public class AudioPlaybackEngine: ObservableObject {
         
         setupRemoteCommandCenter()
         setupAudioSessionObservers()
+        setupCoordinatorCallbacks()
         
         NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor [weak self] in self?.updateEffectivePlaybackRate() }
+        }
+    }
+    
+    private func setupCoordinatorCallbacks() {
+        coordinator.onActualPlayingChanged = { [weak self] playing in
+            guard let self = self else { return }
+            if self.isPlaying != playing {
+                self.isPlaying = playing
+                if playing {
+                    if self.wallClockSessionStartTime == nil {
+                        self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+                    }
+                } else {
+                    self.recordListeningSession()
+                }
+            }
+            self.updateNowPlayingPlaybackInfo()
+        }
+
+        coordinator.onProgress = { [weak self] time, word in
+            guard let self = self else { return }
+            self.currentTime = time
+            self.currentWord = word
+            
+            if let doc = self.currentDocument, let context = doc.modelContext {
+                if self.duration > 0 && abs(self.currentTime - self.lastProgressSaveTime) > 5.0 {
+                    if doc.progress < 1.0 {
+                        doc.progress = self.currentTime / self.duration
+                    }
+                    doc.lastReadCharIndex = word?.rangeLocation ?? doc.lastReadCharIndex
+                    self.lastProgressSaveTime = self.currentTime
+                    try? context.save()
+                }
+            }
+            self.updateNowPlayingPlaybackInfo()
+        }
+
+        coordinator.onCompleted = { [weak self] in
+            guard let self = self else { return }
+            let completedDuration = self.duration > 0 ? self.duration : (self.currentDocument?.estimatedDuration ?? self.currentTime)
+            self.currentTime = completedDuration
+            if let doc = self.currentDocument {
+                doc.progress = 1.0
+                doc.lastReadCharIndex = doc.bodyText.utf16.count
+                if let context = doc.modelContext {
+                    try? context.save()
+                }
+            }
+            self.pause()
+            Task {
+                PlaybackCoordinator.shared.advanceNext()
+            }
         }
     }
     
@@ -152,6 +211,9 @@ public class AudioPlaybackEngine: ObservableObject {
         let newRate = min(3.0, basePlaybackSpeed)
         if abs(playbackRate - newRate) > 0.01 {
             playbackRate = newRate
+            if coordinator.isAppleActive {
+                coordinator.setSpeechRateMultiplier(newRate)
+            }
         }
     }
     
@@ -237,6 +299,33 @@ public class AudioPlaybackEngine: ObservableObject {
         
         self.currentDocument = document
         
+        // Initialize coordinator session
+        let preferences: VoicePreferences
+        if let testVoiceID = PlaybackRoutingCoordinator.testAppleVoiceIdentifier {
+            preferences = VoicePreferences(
+                primary: .apple(identifier: testVoiceID),
+                fallbackAppleVoiceIdentifier: testVoiceID
+            )
+        } else {
+            preferences = VoicePreferencesStore().load()
+        }
+        let snapshot = PlaybackSessionSnapshot(documentID: document.id, preferences: preferences)
+        let resumeCursor = document.lastReadCharIndex > 0 ? PlaybackSourceCursor(segmentOrdinal: 0, globalUTF16Offset: document.lastReadCharIndex) : nil
+        _ = coordinator.begin(
+            document: document,
+            snapshot: snapshot,
+            resumeCursor: resumeCursor,
+            speechRateMultiplier: playbackRate
+        )
+        
+        if coordinator.isAppleActive {
+            self.duration = document.estimatedDuration
+            self.currentTime = coordinator.estimatedCurrentTime
+            self.isGenerationActive = false
+            setupNowPlaying()
+            return
+        }
+        
         if let legacyURL = document.audioFileURL {
             let duration = (try? AVAudioPlayer(contentsOf: legacyURL).duration) ?? document.estimatedDuration
             let chunk = PlayedChunk(
@@ -255,6 +344,15 @@ public class AudioPlaybackEngine: ObservableObject {
     }
 
     public func play() {
+        if coordinator.isAppleActive {
+            if coordinator.play() {
+                wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+                isPlaying = true
+                updateNowPlayingPlaybackInfo()
+            }
+            return
+        }
+        
         do {
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
@@ -264,18 +362,33 @@ public class AudioPlaybackEngine: ObservableObject {
         queuePlayer?.play()
         queuePlayer?.rate = playbackRate
         isPlaying = true
-        currentSessionStartTime = currentTime
+        wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
         updateNowPlayingPlaybackInfo()
     }
     
     public func pause() {
+        if coordinator.isAppleActive {
+            coordinator.pause()
+            isPlaying = false
+            recordListeningSession()
+            saveDocumentProgress()
+            updateNowPlayingPlaybackInfo()
+            evaluateAudioSession()
+            return
+        }
+        
         queuePlayer?.pause()
         isRecoveringFromUnderrun = false
         isPlaying = false
         updateNowPlayingPlaybackInfo()
-        
-        if let startTime = currentSessionStartTime {
-            let sessionDuration = currentTime - startTime
+        recordListeningSession()
+        saveDocumentProgress()
+        evaluateAudioSession()
+    }
+    
+    private func recordListeningSession() {
+        if let startTime = wallClockSessionStartTime {
+            let sessionDuration = Date().timeIntervalSinceReferenceDate - startTime
             if sessionDuration > 2.0, let doc = currentDocument, let context = doc.modelContext {
                 let words = Int((sessionDuration / 60.0) * 150.0 * Double(playbackRate))
                 let session = ListeningSession(
@@ -287,19 +400,29 @@ public class AudioPlaybackEngine: ObservableObject {
                 context.insert(session)
                 try? context.save()
             }
-            currentSessionStartTime = nil
+            wallClockSessionStartTime = nil
         }
-        
+    }
+
+    private func saveDocumentProgress() {
         if let doc = currentDocument, duration > 0 {
-            doc.progress = currentTime / duration
+            if doc.progress < 1.0 {
+                doc.progress = currentTime / duration
+            }
             doc.lastReadCharIndex = PlaybackProgress.shared.currentWord?.rangeLocation ?? doc.lastReadCharIndex
             lastProgressSaveTime = currentTime
+            if let context = doc.modelContext {
+                try? context.save()
+            }
         }
-        
-        evaluateAudioSession()
     }
     
     public func clearMemory() {
+        recordListeningSession()
+        saveDocumentProgress()
+        if coordinator.isAppleActive {
+            coordinator.cancel()
+        }
         generationGate.invalidate()
         queuePlayer?.pause()
         queuePlayer?.removeAllItems()
@@ -326,8 +449,15 @@ public class AudioPlaybackEngine: ObservableObject {
     }
     
     public func resetAndSeek(to targetTime: TimeInterval) {
-        guard let doc = currentDocument else { return }
+        guard currentDocument != nil else { return }
         
+        if coordinator.isAppleActive {
+            seekDebounceTimer?.invalidate()
+            seekDebounceTimer = nil
+            performSeek(to: targetTime)
+            play()
+            return
+        }
         
         // Force the engine to discard existing loaded audio chunks so that
         // performSeek doesn't just re-queue the old files and return early.
@@ -357,11 +487,23 @@ public class AudioPlaybackEngine: ObservableObject {
     }
 
     private func performSeek(to targetTime: TimeInterval) {
+        recordListeningSession()
+        saveDocumentProgress()
         PlaybackProgress.shared.currentWord = nil
         guard let doc = currentDocument else { return }
         
         let totalDuration = doc.estimatedDuration > 0 ? doc.estimatedDuration : max(duration, 1)
         let safeTargetTime = max(0, min(targetTime, totalDuration))
+        
+        if coordinator.isAppleActive {
+            coordinator.seek(to: safeTargetTime)
+            self.currentTime = safeTargetTime
+            if isPlaying {
+                wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+            }
+            updateNowPlayingPlaybackInfo()
+            return
+        }
         
         let currentVirtualStartTime = chunks.first?.globalStartTime ?? virtualBaseOffset
         let currentVirtualEndTime = chunks.last.map { $0.globalStartTime + $0.duration } ?? virtualBaseOffset
@@ -397,6 +539,7 @@ public class AudioPlaybackEngine: ObservableObject {
                         if self.isPlaying {
                             self.queuePlayer?.play()
                             self.queuePlayer?.rate = self.playbackRate
+                            self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
                         }
                     }
                 }
@@ -405,6 +548,7 @@ public class AudioPlaybackEngine: ObservableObject {
                     queuePlayer?.play()
                     queuePlayer?.rate = playbackRate
                     self.isPlaying = true
+                    self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
                 }
             }
             self.currentTime = safeTargetTime
@@ -446,6 +590,7 @@ public class AudioPlaybackEngine: ObservableObject {
             // It will resume automatically when enqueue is called in AudioGenerationManager if isFirst is handled correctly.
             // But we can also set isPlaying to true so UI knows it's playing
             self.isPlaying = true
+            self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
         }
     }
 
@@ -461,8 +606,20 @@ public class AudioPlaybackEngine: ObservableObject {
     }
     
     private func performSeek(toCharIndex charIndex: Int) {
+        recordListeningSession()
+        saveDocumentProgress()
         PlaybackProgress.shared.currentWord = nil
         guard let doc = currentDocument else { return }
+        
+        if coordinator.isAppleActive {
+            coordinator.seek(toUTF16Offset: charIndex)
+            self.currentTime = coordinator.estimatedCurrentTime
+            if isPlaying {
+                wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+            }
+            updateNowPlayingPlaybackInfo()
+            return
+        }
         
         var matchedChunkTime: TimeInterval? = nil
         for chunk in chunks {
@@ -528,15 +685,20 @@ public class AudioPlaybackEngine: ObservableObject {
         
         if wasPlaying {
             self.isPlaying = true
+            self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
         }
     }
 
     public func skipForward() {
-        seek(to: currentTime + defaultSkipInterval)
+        seekDebounceTimer?.invalidate()
+        seekDebounceTimer = nil
+        performSeek(to: currentTime + defaultSkipInterval)
     }
     
     public func skipBackward() {
-        seek(to: max(0, currentTime - defaultSkipInterval))
+        seekDebounceTimer?.invalidate()
+        seekDebounceTimer = nil
+        performSeek(to: max(0, currentTime - defaultSkipInterval))
     }
     
     private func setupTimeObserver() {
@@ -646,12 +808,31 @@ public class AudioPlaybackEngine: ObservableObject {
                 switch type {
                 case .began:
                     self.wasPlayingBeforeInterruption = self.isPlaying
-                    self.pause()
+                    if self.coordinator.isAppleActive {
+                        _ = self.coordinator.beginInterruption()
+                        self.isPlaying = false
+                        self.updateNowPlayingPlaybackInfo()
+                        self.recordListeningSession()
+                        self.saveDocumentProgress()
+                    } else {
+                        self.pause()
+                    }
                 case .ended:
                     if let optionsValue = optionsValue {
                         let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-                        if options.contains(.shouldResume) && self.wasPlayingBeforeInterruption {
-                            self.play()
+                        let shouldResume = options.contains(.shouldResume) && self.wasPlayingBeforeInterruption
+                        if self.coordinator.isAppleActive {
+                            if self.coordinator.endInterruption(shouldResume: shouldResume) {
+                                self.isPlaying = shouldResume
+                                if shouldResume {
+                                    self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+                                }
+                                self.updateNowPlayingPlaybackInfo()
+                            }
+                        } else {
+                            if shouldResume {
+                                self.play()
+                            }
                         }
                     }
                 @unknown default:

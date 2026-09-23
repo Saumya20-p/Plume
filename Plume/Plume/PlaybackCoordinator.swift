@@ -28,7 +28,7 @@ public class PlaybackCoordinator: ObservableObject {
             if AudioPlaybackEngine.shared.isPlayerViewPresented {
                 AudioPlaybackEngine.shared.presentedPlayerDocument = nextDoc
             }
-            if nextDoc.audioFileURL != nil {
+            if nextDoc.audioFileURL != nil || AudioPlaybackEngine.shared.isAppleActive {
                 AudioPlaybackEngine.shared.load(document: nextDoc)
                 AudioPlaybackEngine.shared.play()
             } else {

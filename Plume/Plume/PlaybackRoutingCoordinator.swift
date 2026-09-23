@@ -1,0 +1,703 @@
+import AVFoundation
+import Foundation
+
+/// Main-actor coordinator that manages a logical playback session.
+/// The coordinator owns the `PlaybackStateMachine` (`PlaybackSessionContract`)
+/// and arbitrates between `AppleSpeechProducer` and the legacy Kokoro playback logic.
+@MainActor
+final class PlaybackRoutingCoordinator {
+
+    // MARK: - State Machine & Producer Ownership
+
+    private(set) var contract: PlaybackSessionContract?
+
+    /// Explicit accessor for the owned PlaybackStateMachine (alias for PlaybackSessionContract).
+    var stateMachine: PlaybackStateMachine? {
+        contract
+    }
+
+    private(set) var document: Document?
+    private let appleProducer: AppleSpeechProducer
+    private var segments: [TextSegmenter.Chunk] = []
+    private var nextSegmentIndex = 0
+    private var terminalCallbacks = Set<UUID>()
+    private var appleVoice: AVSpeechSynthesisVoice?
+    private var speechRateMultiplier: Float = 1.0
+
+    // MARK: - Temporary Test Hook (Phase 3)
+
+    /// Test hook for testing the Apple engine on physical devices.
+    /// When non-nil, forces the engine to route playback using Apple Speech with this voice identifier.
+    /// Samantha (or device system voice) allows immediate verification.
+    static var testAppleVoiceIdentifier: String? = "com.apple.voice.compact.en-US.Samantha"
+
+    // MARK: - Callbacks
+
+    var onStateChange: ((PlaybackSessionContract) -> Void)?
+    var onDisplayRange: ((UTF16TextRange) -> Void)?
+    var onProgress: ((TimeInterval, WordTimestamp?) -> Void)?
+    var onActualPlayingChanged: ((Bool) -> Void)?
+    var onCompleted: (() -> Void)?
+    private(set) var lastError: String?
+
+    // MARK: - Initialization
+
+    init(appleProducer: AppleSpeechProducer? = nil) {
+        self.appleProducer = appleProducer ?? AppleSpeechProducer()
+        wireAppleProducer()
+    }
+
+    // MARK: - Arbitration Properties
+
+    var snapshot: PlaybackSessionSnapshot? {
+        contract?.snapshot
+    }
+
+    var desiredPlayIntent: PlaybackPlayIntent {
+        contract?.desiredPlayIntent ?? .paused
+    }
+
+    var actualActivity: PlaybackActualActivity {
+        contract?.actualActivity ?? .idle
+    }
+
+    var preparationStatus: PlaybackPreparationStatus {
+        contract?.preparationStatus ?? .idle
+    }
+
+    var activeProducer: PlaybackProducer? {
+        contract?.activeProducer
+    }
+
+    var isAppleActive: Bool {
+        guard let primaryVoice = contract?.primaryVoice else { return false }
+        if case .apple = primaryVoice {
+            return true
+        }
+        return false
+    }
+
+    var isKokoroActive: Bool {
+        guard let primaryVoice = contract?.primaryVoice else { return false }
+        if case .kokoro = primaryVoice {
+            return true
+        }
+        return false
+    }
+
+    var isPlaying: Bool {
+        if isAppleActive {
+            return contract?.actualActivity.isPlaying == true || appleProducer.isSpeaking
+        }
+        return contract?.actualActivity.isPlaying == true
+    }
+
+    var estimatedCurrentTime: TimeInterval {
+        guard let document, contract?.sourceUTF16Length ?? 0 > 0 else { return 0 }
+        let currentOffset = contract?.sourceCursor?.globalUTF16Offset ?? 0
+        let ratio = Double(currentOffset) / Double(contract?.sourceUTF16Length ?? 1)
+        let totalDuration = document.estimatedDuration > 0 ? document.estimatedDuration : 60.0
+        return max(0, min(totalDuration, ratio * totalDuration))
+    }
+
+    // MARK: - Session Lifecycle
+
+    @discardableResult
+    func begin(
+        document: Document,
+        snapshot: PlaybackSessionSnapshot,
+        resumeCursor: PlaybackSourceCursor? = nil,
+        speechRateMultiplier: Float = 1.0
+    ) -> Bool {
+        guard snapshot.documentID == document.id else { return false }
+
+        appleProducer.stop()
+        terminalCallbacks.removeAll(keepingCapacity: true)
+        self.document = document
+        self.segments = TextSegmenter.segment(documentID: document.id, text: document.bodyText)
+        self.speechRateMultiplier = speechRateMultiplier
+        self.lastError = nil
+
+        let startOffset = resumeCursor?.globalUTF16Offset ?? document.lastReadCharIndex
+        guard let cursor = cursorForCharacterOffset(
+            startOffset,
+            sourceLength: document.bodyText.utf16.count
+        ) else {
+            contract = nil
+            return false
+        }
+        guard let newContract = PlaybackSessionContract(
+            documentID: document.id,
+            preferences: VoicePreferences(
+                primary: snapshot.primaryVoice,
+                fallbackAppleVoiceIdentifier: snapshot.fallbackAppleVoiceIdentifier
+            ),
+            sourceUTF16Length: document.bodyText.utf16.count,
+            initialCursor: cursor,
+            sessionID: snapshot.sessionID
+        ) else {
+            contract = nil
+            return false
+        }
+        contract = newContract
+        nextSegmentIndex = firstSegmentIndex(after: cursor)
+        appleVoice = nil
+
+        if isAppleActive {
+            appleVoice = resolveAppleVoice(identifier: snapshot.primaryVoice.identifier)
+            guard appleVoice != nil else {
+                lastError = "The selected Apple voice is unavailable."
+                if var failedContract = contract,
+                   let event = failedContract.eventIdentity(for: .apple) {
+                    _ = failedContract.setPreparationStatus(.failed, event: event)
+                    _ = failedContract.markRecoverablePause(event: event)
+                    contract = failedContract
+                }
+                notifyState()
+                return false
+            }
+        }
+
+        notifyState()
+        return true
+    }
+
+    // MARK: - Playback Commands
+
+    @discardableResult
+    func play() -> Bool {
+        guard isAppleActive else {
+            contract?.requestPlay()
+            notifyState()
+            return true
+        }
+        guard appleVoice != nil, var contract else { return false }
+
+        if contract.lifecycle == .suspended {
+            contract.requestPlay()
+            self.contract = contract
+            notifyState()
+            return true
+        }
+        guard contract.lifecycle == .active else { return false }
+
+        let alreadyPlaying = contract.desiredPlayIntent == .playing
+        contract.requestPlay()
+        self.contract = contract
+
+        if alreadyPlaying, appleProducer.isSpeaking || appleProducer.totalBufferedCount > 0 {
+            notifyState()
+            return true
+        }
+
+        do {
+            try appleProducer.activateAudioSession()
+        } catch {
+            lastError = "Unable to activate audio playback: \(error.localizedDescription)"
+            contract.pause()
+            if let event = contract.eventIdentity(for: .apple) {
+                _ = contract.markRecoverablePause(event: event)
+            }
+            self.contract = contract
+            onActualPlayingChanged?(false)
+            notifyState()
+            return false
+        }
+        lastError = nil
+
+        if appleProducer.totalBufferedCount == 0 {
+            pumpAppleUtterances()
+        } else if appleProducer.isPaused {
+            appleProducer.resume()
+        }
+        notifyState()
+        return true
+    }
+
+    func pause() {
+        guard isAppleActive else {
+            contract?.pause()
+            notifyState()
+            return
+        }
+        appleProducer.stop()
+        terminalCallbacks.removeAll(keepingCapacity: true)
+        contract?.pause()
+        let resetCursor = contract?.committedCursor ?? contract?.sourceCursor
+        if let resetCursor {
+            _ = contract?.seek(to: resetCursor)
+            nextSegmentIndex = firstSegmentIndex(after: resetCursor)
+        } else if let cursor = contract?.sourceCursor {
+            nextSegmentIndex = firstSegmentIndex(after: cursor)
+        }
+        onActualPlayingChanged?(false)
+        notifyState()
+    }
+
+    @discardableResult
+    func seek(to cursor: PlaybackSourceCursor) -> Bool {
+        guard var contract else { return false }
+        guard let normalizedCursor = cursorForCharacterOffset(
+            cursor.globalUTF16Offset,
+            sourceLength: contract.sourceUTF16Length
+        ) else { return false }
+
+        guard isAppleActive else {
+            let success = contract.seek(to: normalizedCursor)
+            self.contract = contract
+            notifyState()
+            return success
+        }
+
+        let wasPlaying = contract.desiredPlayIntent == .playing
+        guard contract.seek(to: normalizedCursor) else { return false }
+        self.contract = contract
+        appleProducer.stop()
+        terminalCallbacks.removeAll(keepingCapacity: true)
+        nextSegmentIndex = firstSegmentIndex(after: normalizedCursor)
+        onActualPlayingChanged?(false)
+        if wasPlaying {
+            pumpAppleUtterances()
+        }
+        notifyState()
+        return true
+    }
+
+    @discardableResult
+    func seek(toUTF16Offset offset: Int) -> Bool {
+        guard let cursor = cursorForCharacterOffset(
+            offset,
+            sourceLength: document?.bodyText.utf16.count ?? 0
+        ) else { return false }
+        return seek(to: cursor)
+    }
+
+    func seek(to targetTime: TimeInterval) {
+        guard let document = document else { return }
+        let totalDuration = document.estimatedDuration > 0 ? document.estimatedDuration : 1.0
+        let safeTargetTime = max(0, min(targetTime, totalDuration))
+        let ratio = safeTargetTime / totalDuration
+        let targetOffset = Int(ratio * Double(document.bodyText.utf16.count))
+        _ = seek(toUTF16Offset: targetOffset)
+    }
+
+    func skip(by seconds: TimeInterval) {
+        let newTime = max(0, estimatedCurrentTime + seconds)
+        seek(to: newTime)
+    }
+
+    @discardableResult
+    func beginInterruption() -> Bool {
+        guard isAppleActive, var contract,
+              contract.lifecycle == .active else { return false }
+        appleProducer.stop()
+        terminalCallbacks.removeAll(keepingCapacity: true)
+        let resetCursor = contract.committedCursor ?? contract.sourceCursor
+        if let resetCursor {
+            _ = contract.seek(to: resetCursor)
+            nextSegmentIndex = firstSegmentIndex(after: resetCursor)
+        } else {
+            nextSegmentIndex = 0
+        }
+        contract.beginInterruption()
+        self.contract = contract
+        onActualPlayingChanged?(false)
+        notifyState()
+        return true
+    }
+
+    @discardableResult
+    func endInterruption(shouldResume: Bool) -> Bool {
+        guard isAppleActive, var contract,
+              contract.lifecycle == .suspended,
+              contract.endInterruption() else { return false }
+
+        if !shouldResume, contract.desiredPlayIntent == .playing {
+            contract.pause()
+        }
+        self.contract = contract
+        if shouldResume, contract.desiredPlayIntent == .playing {
+            _ = play()
+            return true
+        } else {
+            onActualPlayingChanged?(false)
+        }
+        notifyState()
+        return true
+    }
+
+    func setSpeechRateMultiplier(_ multiplier: Float) {
+        speechRateMultiplier = max(0.5, min(3.0, multiplier))
+    }
+
+    func cancel() {
+        appleProducer.stop()
+        terminalCallbacks.removeAll(keepingCapacity: true)
+        let resetCursor = contract?.committedCursor ?? contract?.sourceCursor
+        if let resetCursor {
+            _ = contract?.seek(to: resetCursor)
+        }
+        _ = contract?.cancel()
+        onActualPlayingChanged?(false)
+        notifyState()
+    }
+
+    // MARK: - Private Producer Wiring & Scheduling
+
+    private func wireAppleProducer() {
+        appleProducer.onDidStart = { [weak self] callback in
+            self?.handleDidStart(callback)
+        }
+        appleProducer.onWillSpeak = { [weak self] callback, range in
+            self?.handleWillSpeak(callback, range: range)
+        }
+        appleProducer.onDidFinish = { [weak self] callback in
+            self?.handleDidFinish(callback)
+        }
+        appleProducer.onDidCancel = { [weak self] callback in
+            self?.handleDidCancel(callback)
+        }
+    }
+
+    private func pumpAppleUtterances() {
+        guard isAppleActive,
+              let voice = appleVoice,
+              var contract = self.contract,
+              contract.lifecycle == .active,
+              contract.desiredPlayIntent == .playing
+        else { return }
+
+        while appleProducer.totalBufferedCount < appleProducer.maxInFlightUtterances && nextSegmentIndex < segments.count {
+            let segment = segments[nextSegmentIndex]
+            let segmentStart = segment.nsRange.location
+            let segmentEnd = segment.nsRange.location + segment.nsRange.length
+            let cursorOffset = max(
+                0,
+                min(
+                    contract.sourceCursor?.globalUTF16Offset ?? 0,
+                    contract.sourceUTF16Length
+                )
+            )
+            let requestedLocalOffset = max(
+                0,
+                min(cursorOffset - segmentStart, segment.text.utf16.count)
+            )
+            let localOffset = normalizedUTF16Offset(
+                requestedLocalOffset,
+                in: segment.text
+            )
+            let sourceStart = segmentStart + localOffset
+            let sourceLength = segment.nsRange.length - localOffset
+            nextSegmentIndex += 1
+
+            guard sourceLength > 0 else { continue }
+            let isTerminal = nextSegmentIndex == segments.count
+            let boundaryOffset = isTerminal ? contract.sourceUTF16Length : segmentEnd
+            guard let sourceBoundary = PlaybackSourceCursor(
+                segmentOrdinal: segment.id.ordinal,
+                globalUTF16Offset: boundaryOffset
+            ),
+            let sourceRange = UTF16TextRange.validated(
+                location: sourceStart,
+                length: sourceLength,
+                withinUTF16Length: contract.sourceUTF16Length
+            ) else { continue }
+
+            let text = suffix(of: segment.text, utf16Offset: localOffset)
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let callback = contract.beginCallback(
+                      for: .apple,
+                      sourceBoundary: sourceBoundary
+                  ) else { continue }
+
+            self.contract = contract
+            if isTerminal {
+                terminalCallbacks.insert(callback.utteranceID)
+            }
+            appleProducer.speak(
+                AppleSpeechProducer.Request(
+                    callback: callback,
+                    text: text,
+                    sourceRange: sourceRange,
+                    voice: voice,
+                    rate: AppleSpeechProducer.speechRate(for: speechRateMultiplier)
+                )
+            )
+        }
+
+        self.contract = contract
+        notifyState()
+
+        if appleProducer.totalBufferedCount == 0 && nextSegmentIndex >= segments.count {
+            guard let eofCursor = PlaybackSourceCursor(
+                segmentOrdinal: max(
+                    contract.sourceCursor?.segmentOrdinal ?? 0,
+                    segments.last?.id.ordinal ?? 0
+                ),
+                globalUTF16Offset: contract.sourceUTF16Length
+            ), contract.completeLogicalDocumentAtEOF(at: eofCursor) else { return }
+            self.contract = contract
+            notifyState()
+            onActualPlayingChanged?(false)
+            onCompleted?()
+        }
+    }
+
+    private func requestNextAppleUtterance() {
+        pumpAppleUtterances()
+    }
+
+    private func handleDidStart(_ callback: PlaybackCallbackIdentity) {
+        guard var contract,
+              contract.accepts(callback),
+              contract.markProducerPlaying(
+                  .apple,
+                  event: PlaybackEventIdentity(
+                      sessionID: callback.sessionID,
+                      callbackGeneration: callback.callbackGeneration,
+                      producer: callback.producer
+                  )
+              )
+        else { return }
+        self.contract = contract
+        onActualPlayingChanged?(true)
+        notifyState()
+    }
+
+    private func handleWillSpeak(
+        _ callback: PlaybackCallbackIdentity,
+        range: UTF16TextRange
+    ) {
+        guard var contract,
+              let cursor = PlaybackSourceCursor(
+                  segmentOrdinal: callback.sourceBoundary.segmentOrdinal,
+                  globalUTF16Offset: range.location
+              ),
+              contract.willSpeak(cursor, callback: callback)
+        else { return }
+        self.contract = contract
+        onDisplayRange?(range)
+        let estimatedTime = estimatedTime(for: cursor)
+
+        var wordText = ""
+        if let bodyText = document?.bodyText {
+            let nsString = bodyText as NSString
+            let safeLocation = max(0, min(range.location, nsString.length))
+            let safeLength = max(0, min(range.length, nsString.length - safeLocation))
+            if safeLength > 0 {
+                wordText = nsString.substring(with: NSRange(location: safeLocation, length: safeLength))
+            }
+        }
+        let wordDuration = max(0.05, Double(max(1, range.length)) * 0.05 / Double(speechRateMultiplier))
+        let wordEndTime = estimatedTime + wordDuration
+
+        onProgress?(
+            estimatedTime,
+            WordTimestamp(
+                word: wordText,
+                startTime: estimatedTime,
+                endTime: wordEndTime,
+                rangeLocation: range.location,
+                rangeLength: range.length
+            )
+        )
+        notifyState()
+    }
+
+    private func handleDidFinish(_ callback: PlaybackCallbackIdentity) {
+        guard var contract, contract.accepts(callback) else { return }
+        let isTerminal = terminalCallbacks.remove(callback.utteranceID) != nil
+        let accepted: Bool
+        if isTerminal {
+            accepted = contract.completeLogicalDocument(
+                at: callback.sourceBoundary,
+                callback: callback
+            )
+        } else {
+            accepted = contract.didFinish(
+                at: callback.sourceBoundary,
+                callback: callback
+            )
+        }
+        guard accepted else { return }
+
+        self.contract = contract
+        notifyState()
+
+        if isTerminal {
+            let terminalDuration = document?.estimatedDuration ?? estimatedCurrentTime
+            onActualPlayingChanged?(false)
+            onProgress?(
+                terminalDuration,
+                WordTimestamp(
+                    word: "",
+                    startTime: terminalDuration,
+                    endTime: terminalDuration,
+                    rangeLocation: document?.bodyText.utf16.count,
+                    rangeLength: 0
+                )
+            )
+            onCompleted?()
+        } else if contract.desiredPlayIntent != .playing {
+            onActualPlayingChanged?(false)
+        } else {
+            pumpAppleUtterances()
+            if appleProducer.totalBufferedCount == 0 {
+                if let event = contract.eventIdentity(for: .apple) {
+                    _ = contract.markUnderrun(event: event)
+                    self.contract = contract
+                }
+                onActualPlayingChanged?(false)
+            }
+        }
+    }
+
+    private func handleDidCancel(_ callback: PlaybackCallbackIdentity) {
+        terminalCallbacks.remove(callback.utteranceID)
+        guard var contract,
+              contract.accepts(callback) else { return }
+
+        contract.pause()
+        if let event = contract.eventIdentity(for: callback.producer) {
+            _ = contract.markRecoverablePause(event: event)
+        }
+        lastError = "Apple speech was cancelled."
+        let resetCursor = contract.committedCursor ?? contract.sourceCursor
+        if let resetCursor {
+            _ = contract.seek(to: resetCursor)
+            nextSegmentIndex = firstSegmentIndex(after: resetCursor)
+        } else {
+            nextSegmentIndex = 0
+        }
+        self.contract = contract
+        onActualPlayingChanged?(false)
+        notifyState()
+    }
+
+    private func resolveAppleVoice(identifier: String) -> AVSpeechSynthesisVoice? {
+        let provider = AVFoundationSpeechVoiceProvider()
+        let candidates = provider.availableVoices()
+        let preferredLocale = candidates.first(where: { $0.identifier == identifier })?.language
+        let catalog = AppleSpeechVoiceCatalog(provider: provider, changeObserver: nil)
+        let defaultCandidate = candidates.first(where: { candidate in
+            guard case .default = candidate.quality,
+                  !candidate.isNoveltyVoice,
+                  !candidate.isPersonalVoice
+            else { return false }
+            guard let preferredLocale else { return true }
+            return languageCode(candidate.language) == languageCode(preferredLocale)
+        })
+        let resolution = AppleSpeechVoiceResolver.resolve(
+            preferredIdentifier: identifier,
+            preferredLocale: preferredLocale,
+            eligibleVoices: catalog.voices,
+            compatibleSystemDefault: defaultCandidate
+        )
+        switch resolution {
+        case .chosen(let descriptor), .sameLocale(let descriptor):
+            if let voice = AVSpeechSynthesisVoice(identifier: descriptor.id) {
+                return voice
+            }
+        case .compatibleSystemDefault(let candidate):
+            if let voice = AVSpeechSynthesisVoice(identifier: candidate.identifier) ?? AVSpeechSynthesisVoice(language: candidate.language) {
+                return voice
+            }
+        case .unavailable:
+            break
+        }
+        // Fallback for physical devices / simulators without enhanced voices downloaded
+        return AVSpeechSynthesisVoice(identifier: identifier)
+            ?? AVSpeechSynthesisVoice(language: "en-US")
+            ?? AVSpeechSynthesisVoice.speechVoices().first
+    }
+
+    private func firstSegmentIndex(after cursor: PlaybackSourceCursor) -> Int {
+        segments.firstIndex {
+            $0.id.ordinal > cursor.segmentOrdinal
+                || ($0.id.ordinal == cursor.segmentOrdinal
+                    && $0.nsRange.location + $0.nsRange.length > cursor.globalUTF16Offset)
+        } ?? segments.count
+    }
+
+    private func cursorForCharacterOffset(
+        _ offset: Int,
+        sourceLength: Int
+    ) -> PlaybackSourceCursor? {
+        let safeLength = max(0, sourceLength)
+        let safeOffset = normalizedUTF16Offset(offset, sourceLength: safeLength)
+        if let segment = segments.first(where: {
+            $0.nsRange.location + $0.nsRange.length > safeOffset
+        }) {
+            return PlaybackSourceCursor(
+                segmentOrdinal: segment.id.ordinal,
+                globalUTF16Offset: safeOffset
+            )
+        }
+        return PlaybackSourceCursor(
+            segmentOrdinal: segments.last?.id.ordinal ?? 0,
+            globalUTF16Offset: safeOffset
+        )
+    }
+
+    private func suffix(of text: String, utf16Offset: Int) -> String {
+        let safeOffset = max(0, min(utf16Offset, text.utf16.count))
+        guard safeOffset > 0 else { return text }
+        guard safeOffset < text.utf16.count else { return "" }
+
+        var start = text.startIndex
+        for index in text.indices {
+            let boundary = index.utf16Offset(in: text)
+            if boundary > safeOffset { break }
+            start = index
+        }
+        return String(text[start...])
+    }
+
+    private func normalizedUTF16Offset(_ offset: Int, sourceLength: Int) -> Int {
+        guard sourceLength > 0 else { return 0 }
+        let safeOffset = max(0, min(offset, sourceLength))
+        guard safeOffset < sourceLength,
+              let source = document?.bodyText,
+              source.utf16.count == sourceLength else {
+            return safeOffset
+        }
+        return normalizedUTF16Offset(safeOffset, in: source)
+    }
+
+    private func normalizedUTF16Offset(_ offset: Int, in text: String) -> Int {
+        let safeOffset = max(0, min(offset, text.utf16.count))
+        guard safeOffset > 0, safeOffset < text.utf16.count else {
+            return safeOffset
+        }
+
+        var normalized = 0
+        for index in text.indices {
+            let boundary = index.utf16Offset(in: text)
+            if boundary > safeOffset { break }
+            normalized = boundary
+        }
+        return normalized
+    }
+
+    private func estimatedTime(for cursor: PlaybackSourceCursor) -> TimeInterval {
+        guard let document, contract?.sourceUTF16Length ?? 0 > 0 else { return 0 }
+        let ratio = Double(cursor.globalUTF16Offset)
+            / Double(contract?.sourceUTF16Length ?? 1)
+        return max(0, min(document.estimatedDuration, ratio * document.estimatedDuration))
+    }
+
+    private func languageCode(_ language: String) -> String? {
+        Locale.Language(identifier: language.replacingOccurrences(of: "_", with: "-"))
+            .languageCode?.identifier
+            .lowercased()
+    }
+
+    private func notifyState() {
+        if let contract {
+            onStateChange?(contract)
+        }
+    }
+}
+
+/// Backward compatibility alias for any existing references.
+typealias PlaybackSessionRouter = PlaybackRoutingCoordinator

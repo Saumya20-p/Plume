@@ -134,7 +134,7 @@ struct PlayerView: View {
                 }
             }
             
-            if document.audioFileURL != nil {
+            if document.audioFileURL != nil || playbackEngine.isAppleActive {
                 if !playbackEngine.isPlaying {
                     playbackEngine.play()
                 }
@@ -266,7 +266,7 @@ struct PlayerControlsView: View {
                 
                 Button(action: {
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    if playbackEngine.chunks.isEmpty && document.audioFileURL == nil && !generationManager.generatingDocumentIDs.contains(document.id) {
+                    if !playbackEngine.isAppleActive && playbackEngine.chunks.isEmpty && document.audioFileURL == nil && !generationManager.generatingDocumentIDs.contains(document.id) {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                             let resumeIndex = PlaybackProgress.shared.currentWord?.rangeLocation ?? document.lastReadCharIndex
                             if resumeIndex > 0 {
@@ -281,7 +281,7 @@ struct PlayerControlsView: View {
                     }
                 }) {
                     Group {
-                        if generationManager.generatingDocumentIDs.contains(document.id) && playbackEngine.chunks.isEmpty && document.audioFileURL == nil {
+                        if !playbackEngine.isAppleActive && generationManager.generatingDocumentIDs.contains(document.id) && playbackEngine.chunks.isEmpty && document.audioFileURL == nil {
                             ProgressView()
                                 .tint(.white)
                         } else {

@@ -245,7 +245,10 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
     private(set) var lifecycle: PlaybackSessionLifecycle
     private(set) var producerOwnership: PlaybackProducerOwnership
     private(set) var hasValidBufferedAudio: Bool
-    private(set) var activeCallback: PlaybackCallbackIdentity?
+    private(set) var activeCallbacks: [PlaybackCallbackIdentity] = []
+    var activeCallback: PlaybackCallbackIdentity? {
+        activeCallbacks.first
+    }
 
     private var didCompleteLogicalDocument: Bool
 
@@ -274,7 +277,7 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
         self.lifecycle = .active
         self.producerOwnership = PlaybackProducerOwnership()
         self.hasValidBufferedAudio = false
-        self.activeCallback = nil
+        self.activeCallbacks = []
         self.didCompleteLogicalDocument = false
     }
 
@@ -465,8 +468,9 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
     ) -> PlaybackCallbackIdentity? {
         guard lifecycle == .active else { return nil }
         let sourceBoundary = sourceBoundary ?? cursors.sourceCursor ?? .beginning
+        let boundaryFloor = activeCallbacks.last?.sourceBoundary ?? cursors.sourceCursor ?? .beginning
         guard accepts(sourceBoundary),
-              sourceBoundary >= (cursors.sourceCursor ?? .beginning),
+              sourceBoundary >= boundaryFloor,
               producerOwnership.acquire(producer)
         else { return nil }
         let callback = PlaybackCallbackIdentity(
@@ -476,7 +480,8 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
             producer: producer,
             sourceBoundary: sourceBoundary
         )
-        activeCallback = callback
+        activeCallbacks.append(callback)
+        hasValidBufferedAudio = true
         return callback
     }
 
@@ -484,7 +489,7 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
         lifecycle == .active
             && callback.sessionID == sessionID
             && callback.callbackGeneration == callbackGeneration
-            && callback == activeCallback
+            && activeCallbacks.contains(callback)
             && producerOwnership.owner == callback.producer
     }
 
@@ -509,7 +514,7 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
         guard accepts(callback), cursor == callback.sourceBoundary, accepts(cursor), cursors.commit(to: cursor) else {
             return false
         }
-        activeCallback = nil
+        activeCallbacks.removeAll { $0 == callback }
         return true
     }
 
@@ -518,7 +523,7 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
     @discardableResult
     mutating func didCancel(callback: PlaybackCallbackIdentity) -> Bool {
         guard accepts(callback) else { return false }
-        activeCallback = nil
+        activeCallbacks.removeAll { $0 == callback }
         return true
     }
 
@@ -553,7 +558,7 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
     @discardableResult
     mutating func invalidateCallbacks() -> UInt64 {
         callbackGeneration &+= 1
-        activeCallback = nil
+        activeCallbacks.removeAll(keepingCapacity: true)
         return callbackGeneration
     }
 
@@ -592,7 +597,7 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
         lifecycle = .completed
         actualActivity = .idle
         hasValidBufferedAudio = false
-        activeCallback = nil
+        activeCallbacks.removeAll(keepingCapacity: false)
         callbackGeneration &+= 1
         producerOwnership.releaseAll()
         return true
@@ -608,7 +613,7 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
     ) -> Bool {
         guard !didCompleteLogicalDocument,
               lifecycle == .active,
-              activeCallback == nil,
+              activeCallbacks.isEmpty,
               cursor.globalUTF16Offset == sourceUTF16Length,
               accepts(cursor),
               cursors.commit(to: cursor)

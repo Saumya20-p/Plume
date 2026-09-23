@@ -271,6 +271,42 @@ final class PlaybackSessionContractTests: XCTestCase {
         XCTAssertNil(session.activeProducer)
     }
 
+    func testMultipleInFlightCallbacksCanBeQueuedAndFinishedSequentially() throws {
+        var session = try makeSession(sourceLength: 30)
+        let firstBoundary = try cursor(segment: 0, offset: 10)
+        let secondBoundary = try cursor(segment: 1, offset: 20)
+
+        let firstToken = try XCTUnwrap(
+            session.beginCallback(for: .apple, utteranceID: UUID(), sourceBoundary: firstBoundary)
+        )
+        let secondToken = try XCTUnwrap(
+            session.beginCallback(for: .apple, utteranceID: UUID(), sourceBoundary: secondBoundary)
+        )
+
+        XCTAssertEqual(session.activeCallbacks.count, 2)
+        XCTAssertEqual(session.activeCallback, firstToken)
+        XCTAssertTrue(session.accepts(firstToken))
+        XCTAssertTrue(session.accepts(secondToken))
+
+        // Will speak on first token
+        XCTAssertTrue(session.willSpeak(try cursor(segment: 0, offset: 5), callback: firstToken))
+
+        // First token finishes
+        XCTAssertTrue(session.didFinish(at: firstBoundary, callback: firstToken))
+        XCTAssertEqual(session.activeCallbacks.count, 1)
+        XCTAssertEqual(session.activeCallback, secondToken)
+        XCTAssertFalse(session.accepts(firstToken))
+        XCTAssertTrue(session.accepts(secondToken))
+
+        // Will speak on second token
+        XCTAssertTrue(session.willSpeak(try cursor(segment: 1, offset: 15), callback: secondToken))
+
+        // Second token finishes
+        XCTAssertTrue(session.didFinish(at: secondBoundary, callback: secondToken))
+        XCTAssertEqual(session.activeCallbacks.count, 0)
+        XCTAssertNil(session.activeCallback)
+    }
+
     func testResolverUsesChosenThenSameLocaleThenValidatedSystemDefault() {
         let chosen = descriptor("chosen", language: "en-US", quality: .enhanced)
         let sameLocale = descriptor("same-locale", language: "en-US", quality: .premium)
