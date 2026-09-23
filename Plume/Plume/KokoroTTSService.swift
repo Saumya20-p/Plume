@@ -198,6 +198,11 @@ actor KokoroEngineActor {
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
         
+        let set = CharacterSet.letters.union(.decimalDigits)
+        guard normalizedText.rangeOfCharacter(from: set) != nil else {
+            return AudioChunk(identity: identity, fileURL: destinationURL, duration: 0, timestamps: [])
+        }
+        
         // Wait efficiently before dispatching to Metal to avoid background SIGABRT
         try await backgroundState.waitToStartExecuting()
         
@@ -936,6 +941,11 @@ extension KokoroEngineActor {
     
     public func generatePreview(for voiceId: String, outputURL: URL) throws {
         let text = "Hi, I am ready to read."
+        let set = CharacterSet.letters.union(.decimalDigits)
+        guard text.rangeOfCharacter(from: set) != nil else {
+            return
+        }
+        
         let sampleRate = Double(KokoroTTS.Constants.samplingRate)
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
