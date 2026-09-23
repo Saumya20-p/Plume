@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os
 
 /// Main-actor coordinator that manages a logical playback session.
 /// The coordinator owns the `PlaybackStateMachine` (`PlaybackSessionContract`)
@@ -63,7 +64,10 @@ final class PlaybackRoutingCoordinator {
         contract?.activeProducer
     }
 
+    private(set) var isFallbackActive: Bool = false
+
     var isAppleActive: Bool {
+        if isFallbackActive { return true }
         guard let primaryVoice = contract?.primaryVoice else { return false }
         if case .apple = primaryVoice {
             return true
@@ -72,6 +76,7 @@ final class PlaybackRoutingCoordinator {
     }
 
     var isKokoroActive: Bool {
+        if isFallbackActive { return false }
         guard let primaryVoice = contract?.primaryVoice else { return false }
         if case .kokoro = primaryVoice {
             return true
@@ -105,6 +110,7 @@ final class PlaybackRoutingCoordinator {
     ) -> Bool {
         guard snapshot.documentID == document.id else { return false }
 
+        isFallbackActive = false
         appleProducer.stop()
         terminalCallbacks.removeAll(keepingCapacity: true)
         self.document = document
@@ -325,6 +331,7 @@ final class PlaybackRoutingCoordinator {
     }
 
     func cancel() {
+        isFallbackActive = false
         appleProducer.stop()
         terminalCallbacks.removeAll(keepingCapacity: true)
         let resetCursor = contract?.committedCursor ?? contract?.sourceCursor
@@ -334,6 +341,127 @@ final class PlaybackRoutingCoordinator {
         _ = contract?.cancel()
         onActualPlayingChanged?(false)
         notifyState()
+    }
+
+    // MARK: - Fallback & Boundary Routing
+
+    /// Commits a completed sentence boundary into the state machine.
+    func commitSentenceBoundary(at cursor: PlaybackSourceCursor) {
+        guard var currentContract = self.contract else { return }
+        if currentContract.commitBoundary(to: cursor) {
+            self.contract = currentContract
+        }
+    }
+
+    /// Commits the boundary of a completed played chunk.
+    func commitChunkBoundary(_ chunk: PlayedChunk) {
+        if case .generated(let identity) = chunk.identity {
+            if let cursor = PlaybackSourceCursor(
+                segmentOrdinal: identity.segmentID.ordinal,
+                globalUTF16Offset: identity.segmentID.utf16Range.upperBound
+            ) {
+                commitSentenceBoundary(at: cursor)
+            }
+        } else if let lastWord = chunk.timestamps.last,
+                  let loc = lastWord.rangeLocation,
+                  let len = lastWord.rangeLength {
+            let offset = loc + len
+            if let cursor = cursorForCharacterOffset(offset, sourceLength: contract?.sourceUTF16Length ?? 0) {
+                commitSentenceBoundary(at: cursor)
+            }
+        }
+    }
+
+    /// Synchronizes the session contract cursor to an explicit character offset (e.g. on seek).
+    func syncCursor(toUTF16Offset offset: Int) {
+        let sourceLength = contract?.sourceUTF16Length ?? document?.bodyText.utf16.count ?? 0
+        guard let cursor = cursorForCharacterOffset(offset, sourceLength: sourceLength) else { return }
+        _ = contract?.seek(to: cursor)
+    }
+
+    /// Advances the highlight/display cursor during playback (e.g. from word timestamps during Kokoro playback).
+    func advanceDisplay(toUTF16Offset offset: Int) {
+        let sourceLength = contract?.sourceUTF16Length ?? document?.bodyText.utf16.count ?? 0
+        guard let cursor = cursorForCharacterOffset(offset, sourceLength: sourceLength) else { return }
+        guard var currentContract = self.contract else { return }
+        if currentContract.advanceDisplay(to: cursor) {
+            self.contract = currentContract
+        }
+    }
+
+    /// Triggers one-way fallback from Kokoro to Apple Speech.
+    /// Seamlessly switches the active producer to AppleSpeechProducer and resumes
+    /// exactly at the last spoken sentence or word boundary without crashing or stopping playback.
+    @discardableResult
+    func triggerFallback(
+        resumeCursor: PlaybackSourceCursor? = nil,
+        reason: String? = nil
+    ) -> Bool {
+        guard !isFallbackActive else { return false }
+        guard contract?.activeProducer != .apple else { return false }
+        if case .apple = contract?.primaryVoice {
+            return false // Primary voice is already Apple Speech; no fallback necessary
+        }
+
+        if let reason = reason {
+            Log.audio.warning("Triggering fallback from Kokoro to Apple Speech: \(reason, privacy: .public)")
+        }
+
+        isFallbackActive = true
+
+        // 1. Resolve fallback Apple voice from contract or stored preferences
+        let fallbackIdentifier = contract?.fallbackAppleVoiceIdentifier
+            ?? VoicePreferencesStore().load().fallbackAppleVoiceIdentifier
+            ?? "com.apple.speech.voice.Alex"
+        appleVoice = resolveAppleVoice(identifier: fallbackIdentifier)
+
+        // 2. Determine target cursor (prefer active display/source cursor to avoid repeating mid-chunk)
+        let targetCursor = resumeCursor
+            ?? contract?.displayCursor
+            ?? contract?.sourceCursor
+            ?? contract?.committedCursor
+            ?? .beginning
+
+        // 3. Reconcile state machine contract: release Kokoro, acquire Apple, and seek to targetCursor
+        if var currentContract = self.contract {
+            if currentContract.activeProducer == .kokoro {
+                _ = currentContract.releaseProducer(.kokoro)
+            }
+            _ = currentContract.acquireProducer(.apple)
+            _ = currentContract.seek(to: targetCursor)
+            self.contract = currentContract
+        }
+
+        // 4. Invalidate Apple producer's internal queues and set next segment
+        appleProducer.stop()
+        terminalCallbacks.removeAll(keepingCapacity: true)
+        nextSegmentIndex = firstSegmentIndex(after: targetCursor)
+
+        // 5. If playback was active or desired, activate audio session and start Apple speech immediately
+        let wasPlaying = desiredPlayIntent == .playing || (contract?.desiredPlayIntent == .playing)
+        if wasPlaying {
+            _ = contract?.requestPlay()
+            do {
+                try appleProducer.activateAudioSession()
+            } catch {
+                lastError = "Unable to activate audio session for fallback: \(error.localizedDescription)"
+                Log.audio.error("Fallback audio session activation failed: \(error.localizedDescription, privacy: .public)")
+            }
+            pumpAppleUtterances()
+        }
+
+        notifyState()
+        onActualPlayingChanged?(isPlaying)
+        return true
+    }
+
+    /// Seamlessly hands off playback to Apple Speech (alias for triggerFallback).
+    @discardableResult
+    func handoff(
+        resumeCursor: PlaybackSourceCursor? = nil,
+        reason: String? = nil
+    ) -> Bool {
+        triggerFallback(resumeCursor: resumeCursor, reason: reason)
     }
 
     // MARK: - Private Producer Wiring & Scheduling

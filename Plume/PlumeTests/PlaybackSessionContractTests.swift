@@ -583,6 +583,26 @@ final class PlaybackSessionContractTests: XCTestCase {
         XCTAssertEqual(sm.documentCursor, c2)
     }
 
+    func testCommitBoundaryAndAdvanceDisplay() throws {
+        var contract = try makeSession(sourceLength: 100)
+        let c10 = try cursor(segment: 0, offset: 10)
+        let c15 = try cursor(segment: 0, offset: 15)
+        let c20 = try cursor(segment: 0, offset: 20)
+
+        // Advance display cursor
+        XCTAssertTrue(contract.send(.advanceDisplay(c15)))
+        XCTAssertEqual(contract.displayCursor, c15)
+        XCTAssertEqual(contract.committedCursor, .beginning)
+
+        // Commit boundary moves committedCursor
+        XCTAssertTrue(contract.send(.commitBoundary(c20)))
+        XCTAssertEqual(contract.committedCursor, c20)
+
+        // Monotonic check: older boundary commit rejected
+        XCTAssertFalse(contract.send(.commitBoundary(c10)))
+        XCTAssertEqual(contract.committedCursor, c20)
+    }
+
     private func makeSession(
         sourceLength: Int = 100,
         initialCursor: PlaybackSourceCursor = .beginning

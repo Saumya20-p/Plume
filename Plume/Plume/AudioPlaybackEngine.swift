@@ -70,6 +70,8 @@ public class AudioPlaybackEngine: ObservableObject {
     private var endObserverToken: Any?
     private var interruptionObserverToken: Any?
     private var routeChangeObserverToken: Any?
+    private var didEnterBackgroundObserverToken: Any?
+    private var userDefaultsObserverToken: Any?
     private var wasPlayingBeforeInterruption: Bool = false
     private var lastProgressSaveTime: TimeInterval = 0
     private var wallClockSessionStartTime: TimeInterval?
@@ -131,10 +133,10 @@ public class AudioPlaybackEngine: ObservableObject {
         }
 
         isGenerationActive = false
-        if chunks.isEmpty {
+        if chunks.isEmpty && !coordinator.isAppleActive {
             self.pause()
         }
-        if isRecoveringFromUnderrun && isPlaying {
+        if isRecoveringFromUnderrun && isPlaying && !coordinator.isAppleActive {
             isRecoveringFromUnderrun = false
             queuePlayer?.play()
             queuePlayer?.rate = playbackRate
@@ -152,9 +154,27 @@ public class AudioPlaybackEngine: ObservableObject {
         setupAudioSessionObservers()
         setupCoordinatorCallbacks()
         
-        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+        userDefaultsObserverToken = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor [weak self] in self?.updateEffectivePlaybackRate() }
+        }
+    }
+
+    deinit {
+        if let token = endObserverToken {
+            NotificationCenter.default.removeObserver(token)
+        }
+        if let token = interruptionObserverToken {
+            NotificationCenter.default.removeObserver(token)
+        }
+        if let token = routeChangeObserverToken {
+            NotificationCenter.default.removeObserver(token)
+        }
+        if let token = didEnterBackgroundObserverToken {
+            NotificationCenter.default.removeObserver(token)
+        }
+        if let token = userDefaultsObserverToken {
+            NotificationCenter.default.removeObserver(token)
         }
     }
     
@@ -354,6 +374,7 @@ public class AudioPlaybackEngine: ObservableObject {
         } catch {
             Log.audio.error("Failed to activate audio session: \(error.localizedDescription, privacy: .public)")
         }
+        _ = coordinator.play()
         isRecoveringFromUnderrun = false
         queuePlayer?.play()
         queuePlayer?.rate = playbackRate
@@ -373,6 +394,7 @@ public class AudioPlaybackEngine: ObservableObject {
             return
         }
         
+        coordinator.pause()
         queuePlayer?.pause()
         isRecoveringFromUnderrun = false
         isPlaying = false
@@ -604,6 +626,7 @@ public class AudioPlaybackEngine: ObservableObject {
         saveDocumentProgress()
         PlaybackProgress.shared.currentWord = nil
         guard let doc = currentDocument else { return }
+        coordinator.syncCursor(toUTF16Offset: charIndex)
         
         if coordinator.isAppleActive {
             coordinator.seek(toUTF16Offset: charIndex)
@@ -702,6 +725,12 @@ public class AudioPlaybackEngine: ObservableObject {
             guard let self = self else { return }
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
+                
+                // Monitor Kokoro buffer runway for underrun
+                if self.isPlaying && !self.coordinator.isAppleActive {
+                    self.checkKokoroBufferUnderrun()
+                }
+
                 // Determine global time by identifying the current playing chunk
                 guard let currentItem = self.queuePlayer?.currentItem,
                       let currentURL = (currentItem.asset as? AVURLAsset)?.url,
@@ -735,6 +764,9 @@ public class AudioPlaybackEngine: ObservableObject {
                         let word = timestamps[foundIndex]
                         if localPlayTime <= word.endTime + 0.5 {
                             PlaybackProgress.shared.currentWord = word
+                            if let loc = word.rangeLocation {
+                                self.coordinator.advanceDisplay(toUTF16Offset: loc)
+                            }
                         }
                     }
                 }
@@ -773,13 +805,26 @@ public class AudioPlaybackEngine: ObservableObject {
             guard let self = self else { return }
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                // If there are no more items in the queue and generation is finished, we're done
-                if (self.queuePlayer?.items().isEmpty ?? true) && !self.isGenerationActive {
-                    self.pause()
-                    
-                    // Trigger auto-advance to next chapter in queue
-                    Task {
-                        PlaybackCoordinator.shared.advanceNext()
+
+                // Identify the chunk that just finished and commit its boundary
+                if let finishedItem = notification.object as? AVPlayerItem,
+                   let finishedURL = (finishedItem.asset as? AVURLAsset)?.url,
+                   let finishedChunk = self.chunks.first(where: { $0.url.lastPathComponent == finishedURL.lastPathComponent }) {
+                    self.coordinator.commitChunkBoundary(finishedChunk)
+                }
+
+                // If there are no more items in the queue
+                if (self.queuePlayer?.items().isEmpty ?? true) {
+                    if self.hasReachedDocumentEnd {
+                        self.pause()
+                        
+                        // Trigger auto-advance to next chapter in queue
+                        Task {
+                            PlaybackCoordinator.shared.advanceNext()
+                        }
+                    } else if self.isPlaying && !self.coordinator.isAppleActive {
+                        // Kokoro ran out of chunks before EOF: trigger fallback!
+                        self.triggerFallbackToAppleSpeech(reason: "Kokoro audio buffer underrun (queue exhausted before EOF)")
                     }
                 }
             }
@@ -850,6 +895,13 @@ public class AudioPlaybackEngine: ObservableObject {
                 }
             }
         }
+
+        didEnterBackgroundObserverToken = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self = self else { return }
+            guard !self.coordinator.isAppleActive, self.currentDocument != nil else { return }
+            Log.audio.info("Application entered background; triggering fallback from Kokoro to Apple Speech.")
+            self.triggerFallbackToAppleSpeech(reason: "Application entered background")
+        }
     }
     
     private func setupNowPlaying() {
@@ -915,6 +967,80 @@ public class AudioPlaybackEngine: ObservableObject {
                   let positionEvent = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             Task { @MainActor [weak self] in self?.seek(to: positionEvent.positionTime) }
             return .success
+        }
+    }
+
+    // MARK: - Fallback Routing
+
+    public var isFallbackActive: Bool {
+        coordinator.isFallbackActive
+    }
+
+    private var hasReachedDocumentEnd: Bool {
+        guard let doc = currentDocument else { return true }
+        if let committed = coordinator.contract?.committedCursor {
+            return committed.globalUTF16Offset >= doc.bodyText.utf16.count
+        }
+        return currentTime >= (duration - 0.5) && !isGenerationActive
+    }
+
+    private func checkKokoroBufferUnderrun() {
+        guard isPlaying, !coordinator.isAppleActive, currentDocument != nil else { return }
+        
+        let runway = bufferedTime - currentTime
+        let itemsCount = queuePlayer?.items().count ?? 0
+        let isStalled = queuePlayer?.timeControlStatus == .waitingToPlayAtSpecifiedRate
+        let hasDepletedRunway = !chunks.isEmpty && (itemsCount == 0 || (runway <= 0.1 && isStalled))
+        
+        if hasDepletedRunway && !hasReachedDocumentEnd {
+            Log.audio.warning("Kokoro buffer underrun detected (runway: \(runway, privacy: .public)s, items: \(itemsCount)). Triggering fallback to Apple Speech.")
+            triggerFallbackToAppleSpeech(reason: "Kokoro audio buffer underrun (runway: \(runway)s)")
+        }
+    }
+
+    public func triggerFallbackToAppleSpeech(reason: String) {
+        guard !coordinator.isAppleActive, let doc = currentDocument else { return }
+        
+        Log.audio.warning("Triggering fallback to Apple Speech. Reason: \(reason, privacy: .public)")
+        
+        // 1. Synchronously check if the current playing chunk has reached or is near its end duration.
+        // If so, commit its boundary immediately before canceling or clearing items to avoid repeating the chunk.
+        if let currentItem = queuePlayer?.currentItem,
+           let currentURL = (currentItem.asset as? AVURLAsset)?.url,
+           let currentChunk = chunks.first(where: { $0.url.lastPathComponent == currentURL.lastPathComponent }) {
+            let itemDuration = currentItem.duration.seconds
+            let itemCurrentTime = currentItem.currentTime().seconds
+            if !itemDuration.isNaN && itemDuration > 0 && itemCurrentTime >= (itemDuration - 0.25) {
+                coordinator.commitChunkBoundary(currentChunk)
+            }
+        }
+
+        // 2. Pause playback and cancel Kokoro generation tasks
+        queuePlayer?.pause()
+        AudioGenerationManager.shared.cancelCurrentGeneration()
+        isGenerationActive = false
+        isRecoveringFromUnderrun = false
+        
+        // 3. Adjust duration to full document duration if available
+        if doc.estimatedDuration > 0 {
+            self.duration = doc.estimatedDuration
+        }
+        
+        // 4. Trigger handoff in coordinator while state and cursors are fully resolved
+        let wasPlaying = self.isPlaying
+        let success = coordinator.triggerFallback(reason: reason)
+        
+        // 5. Defer removing Kokoro items and clearing chunks until after coordinator handoff
+        queuePlayer?.removeAllItems()
+        chunks.removeAll()
+        
+        if success {
+            self.currentTime = coordinator.estimatedCurrentTime
+            if wasPlaying {
+                self.isPlaying = true
+                self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+            }
+            updateNowPlayingPlaybackInfo()
         }
     }
 

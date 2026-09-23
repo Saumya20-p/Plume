@@ -176,6 +176,8 @@ nonisolated enum PlaybackRoutingEvent: Equatable, Sendable {
     case didFinish(DocumentCursor, callback: PlaybackCallbackIdentity)
     case didCancel(callback: PlaybackCallbackIdentity)
     case seek(DocumentCursor)
+    case commitBoundary(DocumentCursor)
+    case advanceDisplay(DocumentCursor)
     case resetPlayback(DocumentCursor)
     case cancel
     case completeLogicalDocument(DocumentCursor, callback: PlaybackCallbackIdentity)
@@ -527,6 +529,22 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
         return true
     }
 
+    /// Commits an explicit source boundary (e.g. when an audio chunk finishes playing).
+    /// Monotonically advances the committed cursor without altering active callbacks or seeking.
+    @discardableResult
+    mutating func commitBoundary(to cursor: PlaybackSourceCursor) -> Bool {
+        guard lifecycle == .active || lifecycle == .suspended, accepts(cursor) else { return false }
+        return cursors.commit(to: cursor)
+    }
+
+    /// Advances the highlight/display cursor (e.g. from word timestamps during playback).
+    /// Monotonically advances the display cursor without altering active callbacks.
+    @discardableResult
+    mutating func advanceDisplay(to cursor: PlaybackSourceCursor) -> Bool {
+        guard lifecycle == .active || lifecycle == .suspended, accepts(cursor) else { return false }
+        return cursors.advanceDisplay(to: cursor)
+    }
+
     /// Seeks invalidate callbacks and clear queued audio because the old audio
     /// belongs to a different source position.  Preference snapshots remain
     /// unchanged.
@@ -670,6 +688,10 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
             return didCancel(callback: callback)
         case .seek(let cursor):
             return seek(to: cursor)
+        case .commitBoundary(let cursor):
+            return commitBoundary(to: cursor)
+        case .advanceDisplay(let cursor):
+            return advanceDisplay(to: cursor)
         case .resetPlayback(let cursor):
             return resetPlayback(at: cursor)
         case .cancel:
