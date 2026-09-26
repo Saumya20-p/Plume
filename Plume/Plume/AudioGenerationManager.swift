@@ -183,6 +183,9 @@ public class AudioGenerationManager: ObservableObject {
                     guard let chunk = try await generator.nextChunk() else {
                         break // End of chapter
                     }
+                    
+                    try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: chunk.fileURL.path)
+
                     guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { break }
                     
                     let exactDuration = try await AVURLAsset(url: chunk.fileURL).load(.duration).seconds
@@ -311,6 +314,8 @@ public class AudioGenerationManager: ObservableObject {
                     guard let chunk = try await generator.nextChunk() else {
                         break
                     }
+                    try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: chunk.fileURL.path)
+
                     guard !Task.isCancelled, playbackEngine.isFallbackActive else { break }
 
                     let exactDuration = try await AVURLAsset(url: chunk.fileURL).load(.duration).seconds
@@ -368,6 +373,8 @@ public class AudioGenerationManager: ObservableObject {
         guard let chunk = try await generator.nextChunk() else {
             return nil
         }
+        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: chunk.fileURL.path)
+
         let exactDuration = try await AVURLAsset(url: chunk.fileURL).load(.duration).seconds
         return AudioChunk(
             identity: chunk.identity,

@@ -4,7 +4,8 @@ import SwiftSoup
 public struct ContentExtractor {
     
     public static func extract(html: String, sourceURL: URL?) -> (title: String, body: String, failed: Bool, coverImageURL: URL?) {
-        guard let doc = try? SwiftSoup.parse(html) else {
+        guard let safeHTML = try? SwiftSoup.clean(html, Whitelist.relaxed()),
+              let doc = try? SwiftSoup.parse(safeHTML) else {
             return ("Unknown Chapter", "", true, nil)
         }
         
