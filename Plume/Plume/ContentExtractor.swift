@@ -4,8 +4,7 @@ import SwiftSoup
 public struct ContentExtractor {
     
     public static func extract(html: String, sourceURL: URL?) -> (title: String, body: String, failed: Bool, coverImageURL: URL?) {
-        guard let safeHTML = try? SwiftSoup.clean(html, Whitelist.relaxed()),
-              let doc = try? SwiftSoup.parse(safeHTML) else {
+        guard let doc = try? SwiftSoup.parse(html) else {
             return ("Unknown Chapter", "", true, nil)
         }
         
@@ -76,10 +75,14 @@ public struct ContentExtractor {
         title = title.components(separatedBy: "-").first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? title
         
         // 3. Find content block
-        var bestElement: Element? = try? doc.select("body").first()
+        guard let cleanDoc = try? Cleaner(headWhitelist: Whitelist.relaxed(), bodyWhitelist: Whitelist.relaxed()).clean(doc) else {
+            return (title, "", true, coverImageURL)
+        }
+        
+        var bestElement: Element? = try? cleanDoc.select("body").first()
         var highestScore: Double = 0
         
-        if let candidates = try? doc.select("article, div, main, section") {
+        if let candidates = try? cleanDoc.select("article, div, main, section") {
             for el in candidates {
                 let text = try? el.text()
                 let textLength = Double(text?.count ?? 0)

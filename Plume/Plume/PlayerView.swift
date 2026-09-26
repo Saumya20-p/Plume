@@ -3,7 +3,10 @@ import SwiftData
 import AVFoundation
 import Combine
 
-struct PlayerView: View {
+struct PlayerView: View, Equatable {
+    static func == (lhs: PlayerView, rhs: PlayerView) -> Bool {
+        return lhs.document.id == rhs.document.id
+    }
     @Bindable var document: Document
     @ObservedObject private var playbackEngine = AudioPlaybackEngine.shared
     @ObservedObject private var progress = PlaybackProgress.shared

@@ -61,6 +61,7 @@ struct MainTabView: View {
         .fullScreenCover(item: $playbackEngine.presentedPlayerDocument) { doc in
             NavigationStack {
                 PlayerView(document: doc)
+                    .equatable()
             }
         }
         .sheet(isPresented: $showAddSheet) {

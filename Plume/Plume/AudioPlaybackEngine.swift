@@ -218,42 +218,48 @@ public class AudioPlaybackEngine: ObservableObject {
     
     private func setupCoordinatorCallbacks() {
         coordinator.onProgress = { [weak self] time, word in
-            guard let self = self else { return }
-            self.currentTime = time
-            self.currentWord = word
-            
-            if let doc = self.currentDocument, let context = doc.modelContext {
-                if self.duration > 0 && abs(self.currentTime - self.lastProgressSaveTime) > 5.0 {
-                    if doc.progress < 1.0 {
-                        doc.progress = self.currentTime / self.duration
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.currentTime = time
+                self.currentWord = word
+                
+                if let doc = self.currentDocument, let context = doc.modelContext {
+                    if self.duration > 0 && abs(self.currentTime - self.lastProgressSaveTime) > 5.0 {
+                        if doc.progress < 1.0 {
+                            doc.progress = self.currentTime / self.duration
+                        }
+                        doc.lastReadCharIndex = word?.rangeLocation ?? doc.lastReadCharIndex
+                        self.lastProgressSaveTime = self.currentTime
+                        try? context.save()
                     }
-                    doc.lastReadCharIndex = word?.rangeLocation ?? doc.lastReadCharIndex
-                    self.lastProgressSaveTime = self.currentTime
-                    try? context.save()
                 }
+                self.updateNowPlayingPlaybackInfo()
             }
-            self.updateNowPlayingPlaybackInfo()
         }
 
         coordinator.onCompleted = { [weak self] in
-            guard let self = self else { return }
-            let completedDuration = self.duration > 0 ? self.duration : (self.currentDocument?.estimatedDuration ?? self.currentTime)
-            self.currentTime = completedDuration
-            if let doc = self.currentDocument {
-                doc.progress = 1.0
-                doc.lastReadCharIndex = doc.bodyText.utf16.count
-                if let context = doc.modelContext {
-                    try? context.save()
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let completedDuration = self.duration > 0 ? self.duration : (self.currentDocument?.estimatedDuration ?? self.currentTime)
+                self.currentTime = completedDuration
+                if let doc = self.currentDocument {
+                    doc.progress = 1.0
+                    doc.lastReadCharIndex = doc.bodyText.utf16.count
+                    if let context = doc.modelContext {
+                        try? context.save()
+                    }
                 }
-            }
-            self.pause()
-            Task {
-                PlaybackCoordinator.shared.advanceNext()
+                self.pause()
+                Task {
+                    PlaybackCoordinator.shared.advanceNext()
+                }
             }
         }
 
         coordinator.onPerformHandback = { [weak self] chunks, _ in
-            self?.resumeFromHandback(chunks: chunks, session: nil)
+            Task { @MainActor [weak self] in
+                self?.resumeFromHandback(chunks: chunks, session: nil)
+            }
         }
     }
     
