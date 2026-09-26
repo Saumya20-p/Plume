@@ -8,6 +8,17 @@ import os
 @MainActor
 final class PlaybackRoutingCoordinator {
 
+    private enum Constants {
+        static let voiceUnavailable = "The selected Apple voice is unavailable."
+        static func playbackActivationFailed(_ desc: String) -> String { "Unable to activate audio playback: \(desc)" }
+        static func fallbackActivationFailed(_ desc: String) -> String { "Unable to activate audio session for fallback: \(desc)" }
+        static let speechCancelled = "Apple speech was cancelled."
+        static let defaultLanguageCode = "en"
+        static let defaultVoiceLanguage = "en-US"
+        static let underscore = "_"
+        static let dash = "-"
+    }
+
     // MARK: - State Machine & Producer Ownership
 
     private(set) var contract: PlaybackSessionContract?
@@ -176,7 +187,7 @@ final class PlaybackRoutingCoordinator {
         if isAppleActive {
             appleVoice = resolveAppleVoice(identifier: snapshot.primaryVoice.identifier)
             guard appleVoice != nil else {
-                lastError = "The selected Apple voice is unavailable."
+                lastError = Constants.voiceUnavailable
                 if var failedContract = contract,
                    let event = failedContract.eventIdentity(for: .apple) {
                     _ = failedContract.setPreparationStatus(.failed, event: event)
@@ -228,7 +239,7 @@ final class PlaybackRoutingCoordinator {
         do {
             try appleProducer.activateAudioSession()
         } catch {
-            lastError = "Unable to activate audio playback: \(error.localizedDescription)"
+            lastError = Constants.playbackActivationFailed(error.localizedDescription)
             contract.pause()
             if let event = contract.eventIdentity(for: .apple) {
                 _ = contract.markRecoverablePause(event: event)
@@ -485,7 +496,6 @@ final class PlaybackRoutingCoordinator {
         }
 
         if let reason = reason {
-            Log.audio.warning("Triggering fallback from Kokoro to Apple Speech: \(reason, privacy: .public)")
         }
 
         isFallbackActive = true
@@ -527,8 +537,7 @@ final class PlaybackRoutingCoordinator {
             do {
                 try appleProducer.activateAudioSession()
             } catch {
-                lastError = "Unable to activate audio session for fallback: \(error.localizedDescription)"
-                Log.audio.error("Fallback audio session activation failed: \(error.localizedDescription, privacy: .public)")
+                lastError = Constants.fallbackActivationFailed(error.localizedDescription)
             }
             pumpAppleUtterances()
         }
@@ -572,7 +581,6 @@ final class PlaybackRoutingCoordinator {
         }
 
         if isStale {
-            Log.audio.warning("Discarding stale speculative chunk for ordinal \(chunkOrdinal) (committed: \(committedOrdinal), speaking: \(currentSpeaking))")
             return
         }
 
@@ -584,7 +592,6 @@ final class PlaybackRoutingCoordinator {
             self.stagedHandbackSession = session
         }
         isHandbackPending = true
-        Log.audio.info("Coordinator staged speculative Kokoro chunk for ordinal: \(chunkOrdinal, privacy: .public)")
     }
 
     /// Cancels any pending speculative handback and discards staged chunks.
@@ -592,7 +599,6 @@ final class PlaybackRoutingCoordinator {
         isHandbackPending = false
         stagedHandbackChunks.removeAll()
         stagedHandbackSession = nil
-        Log.audio.info("Coordinator cancelled pending handback and purged staged chunks.")
     }
 
     /// Triggers speculative handback from Apple Speech back to Kokoro.
@@ -680,7 +686,6 @@ final class PlaybackRoutingCoordinator {
         stagedHandbackSession = nil
         isHandbackPending = false
 
-        Log.audio.info("Executing atomic handback from Apple Speech to Kokoro with \(chunksToHandback.count) chunk(s).")
 
         // 1. Stop Apple Speech
         appleProducer.stop()
@@ -905,7 +910,6 @@ final class PlaybackRoutingCoordinator {
             // If the next staged chunk matches the boundary (finishedOrdinal + 1), execute the handback swap!
             if let nextChunk = stagedHandbackChunks.first,
                nextChunk.identity.segmentID.ordinal == finishedOrdinal + 1 {
-                Log.audio.info("Sentence finished at ordinal \(finishedOrdinal). Performing atomic handback swap to Kokoro chunk \(nextChunk.identity.segmentID.ordinal).")
                 executeHandback()
                 return
             }
@@ -951,7 +955,7 @@ final class PlaybackRoutingCoordinator {
         if let event = contract.eventIdentity(for: callback.producer) {
             _ = contract.markRecoverablePause(event: event)
         }
-        lastError = "Apple speech was cancelled."
+        lastError = Constants.speechCancelled
         let resetCursor = contract.committedCursor ?? contract.sourceCursor
         if let resetCursor {
             _ = contract.seek(to: resetCursor)
@@ -976,7 +980,7 @@ final class PlaybackRoutingCoordinator {
                   !candidate.isNoveltyVoice,
                   !candidate.isPersonalVoice
             else { return false }
-            let preferredLang = languageCode(preferredLocale) ?? "en"
+            let preferredLang = languageCode(preferredLocale) ?? Constants.defaultLanguageCode
             return languageCode(candidate.language) == preferredLang
         })
         let resolution = AppleSpeechVoiceResolver.resolve(
@@ -1001,8 +1005,8 @@ final class PlaybackRoutingCoordinator {
         if let identifier, let voice = AVSpeechSynthesisVoice(identifier: identifier) {
             return voice
         }
-        return AVSpeechSynthesisVoice(language: "en-US")
-            ?? candidates.first(where: { languageCode($0.language) == "en" }).flatMap { AVSpeechSynthesisVoice(identifier: $0.identifier) }
+        return AVSpeechSynthesisVoice(language: Constants.defaultVoiceLanguage)
+            ?? candidates.first(where: { languageCode($0.language) == Constants.defaultLanguageCode }).flatMap { AVSpeechSynthesisVoice(identifier: $0.identifier) }
             ?? candidates.first.flatMap { AVSpeechSynthesisVoice(identifier: $0.identifier) }
     }
 
@@ -1082,7 +1086,7 @@ final class PlaybackRoutingCoordinator {
     }
 
     private func languageCode(_ language: String) -> String? {
-        Locale.Language(identifier: language.replacingOccurrences(of: "_", with: "-"))
+        Locale.Language(identifier: language.replacingOccurrences(of: Constants.underscore, with: Constants.dash))
             .languageCode?.identifier
             .lowercased()
     }

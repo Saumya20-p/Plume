@@ -332,7 +332,7 @@ public class AudioPlaybackEngine: ObservableObject {
         isGenerationActive = true
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .spokenAudio)
+            try session.setCategory(.playback, mode: .spokenAudio, options: [])
             try session.setActive(true)
         } catch {
             Log.audio.error("Failed to set audio session category: \(error.localizedDescription, privacy: .public)")
@@ -991,7 +991,7 @@ public class AudioPlaybackEngine: ObservableObject {
                 guard let self = self else { return }
                 
                 do {
-                    try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
+                    try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [])
                     try AVAudioSession.sharedInstance().setActive(true)
                 } catch {
                     Log.audio.error("Failed to reset audio session: \(error.localizedDescription, privacy: .public)")
