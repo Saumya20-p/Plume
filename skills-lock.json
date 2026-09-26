@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "ios-code-audit": {
+      "source": "jazzychad/ios-code-audit",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "d8191834ebb34c0e15e67a6d8f4e375afb598a11423164444921ac9375c4f0b1"
+    }
+  }
+}

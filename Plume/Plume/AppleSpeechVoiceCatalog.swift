@@ -50,8 +50,41 @@ protocol AppleSpeechVoiceChangeObserving: AnyObject {
 
 @MainActor
 final class AVFoundationSpeechVoiceProvider: AppleSpeechVoiceProviding {
-    func availableVoices() -> [AppleSpeechVoiceCandidate] {
-        AVSpeechSynthesisVoice.speechVoices().map { voice in
+    private(set) static var cachedCandidates: [AppleSpeechVoiceCandidate]?
+    private static var isPrewarming = false
+    private static var didRegisterChangeObserver = false
+
+    /// Pre-warms and caches available speech voices asynchronously off the Main Thread.
+    static func prewarm(force: Bool = false, completion: (@MainActor () -> Void)? = nil) {
+        ensureChangeObserverRegistered()
+        guard !isPrewarming, (force || cachedCandidates == nil) else {
+            completion?()
+            return
+        }
+        isPrewarming = true
+        Task.detached(priority: .userInitiated) {
+            let candidates = fetchCandidates()
+            await MainActor.run {
+                cachedCandidates = candidates
+                isPrewarming = false
+                completion?()
+            }
+        }
+    }
+
+    /// Sets cached candidates directly (useful for tests or pre-calculated candidate sets).
+    static func setCachedCandidates(_ candidates: [AppleSpeechVoiceCandidate]?) {
+        cachedCandidates = candidates
+    }
+
+    /// Invalidates the in-memory cached candidates.
+    static func invalidateCache() {
+        cachedCandidates = nil
+    }
+
+    nonisolated static func fetchCandidates() -> [AppleSpeechVoiceCandidate] {
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+        return voices.map { voice in
             AppleSpeechVoiceCandidate(
                 identifier: voice.identifier,
                 name: voice.name,
@@ -63,7 +96,31 @@ final class AVFoundationSpeechVoiceProvider: AppleSpeechVoiceProviding {
         }
     }
 
-    private func candidateQuality(for quality: AVSpeechSynthesisVoiceQuality) -> AppleSpeechVoiceCandidateQuality {
+    private static func ensureChangeObserverRegistered() {
+        guard !didRegisterChangeObserver else { return }
+        didRegisterChangeObserver = true
+        NotificationCenter.default.addObserver(
+            forName: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                prewarm(force: true)
+            }
+        }
+    }
+
+    func availableVoices() -> [AppleSpeechVoiceCandidate] {
+        Self.ensureChangeObserverRegistered()
+        if let cached = Self.cachedCandidates {
+            return cached
+        }
+        let candidates = Self.fetchCandidates()
+        Self.cachedCandidates = candidates
+        return candidates
+    }
+
+    nonisolated static func candidateQuality(for quality: AVSpeechSynthesisVoiceQuality) -> AppleSpeechVoiceCandidateQuality {
         switch quality {
         case .enhanced:
             return .enhanced
@@ -101,7 +158,9 @@ private final class NotificationSpeechVoiceChangeObservation: AppleSpeechVoiceCh
             queue: .main
         ) { _ in
             MainActor.assumeIsolated {
-                handler()
+                AVFoundationSpeechVoiceProvider.prewarm(force: true) {
+                    handler()
+                }
             }
         }
     }

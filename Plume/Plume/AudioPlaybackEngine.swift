@@ -61,7 +61,9 @@ public class AudioPlaybackEngine: ObservableObject {
         coordinator.snapshot
     }
     
+    private let prewarmSynthesizer = AVSpeechSynthesizer()
     private var queuePlayer: AVQueuePlayer?
+    private var playerTimeControlCancellable: AnyCancellable?
     
     public var chunks: [PlayedChunk] = []
     public var virtualBaseOffset: TimeInterval = 0
@@ -73,7 +75,12 @@ public class AudioPlaybackEngine: ObservableObject {
     private var didEnterBackgroundObserverToken: Any?
     private var willEnterForegroundObserverToken: Any?
     private var userDefaultsObserverToken: Any?
+    private var mediaServicesLostObserverToken: Any?
+    private var mediaServicesResetObserverToken: Any?
+    private var userDefaultsDebounceTimer: Timer?
     private var wasPlayingBeforeInterruption: Bool = false
+    private var wasSuspendedBeforeInterruption: Bool = false
+    private var wasPlayingBeforeMediaServicesLoss: Bool = false
     private var lastProgressSaveTime: TimeInterval = 0
     private var wallClockSessionStartTime: TimeInterval?
     private var currentSeekTask: Task<Void, Never>? = nil
@@ -151,6 +158,10 @@ public class AudioPlaybackEngine: ObservableObject {
         self.basePlaybackSpeed = savedSpeed == 0 ? 1.0 : Float(savedSpeed)
         self.playbackRate = self.basePlaybackSpeed
         
+        queuePlayer = AVQueuePlayer()
+        queuePlayer?.automaticallyWaitsToMinimizeStalling = false
+        setupPlayerObservers()
+        
         coordinator.playbackEngine = self
         setupRemoteCommandCenter()
         setupAudioSessionObservers()
@@ -158,11 +169,27 @@ public class AudioPlaybackEngine: ObservableObject {
         
         userDefaultsObserverToken = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self = self else { return }
-            Task { @MainActor [weak self] in self?.updateEffectivePlaybackRate() }
+            self.userDefaultsDebounceTimer?.invalidate()
+            self.userDefaultsDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { [weak self] _ in
+                Task { @MainActor [weak self] in 
+                    guard let self = self else { return }
+                    self.updateEffectivePlaybackRate()
+                    
+                    let preferences = VoicePreferencesStore().load()
+                    self.coordinator.updateVoicePreferences(preferences)
+                }
+            }
+        }
+        
+        DispatchQueue.global(qos: .background).async { [weak self] in
+            let utterance = AVSpeechUtterance(string: " ")
+            utterance.volume = 0
+            self?.prewarmSynthesizer.speak(utterance)
         }
     }
 
     deinit {
+        playerTimeControlCancellable?.cancel()
         if let token = endObserverToken {
             NotificationCenter.default.removeObserver(token)
         }
@@ -181,24 +208,15 @@ public class AudioPlaybackEngine: ObservableObject {
         if let token = userDefaultsObserverToken {
             NotificationCenter.default.removeObserver(token)
         }
+        if let token = mediaServicesLostObserverToken {
+            NotificationCenter.default.removeObserver(token)
+        }
+        if let token = mediaServicesResetObserverToken {
+            NotificationCenter.default.removeObserver(token)
+        }
     }
     
     private func setupCoordinatorCallbacks() {
-        coordinator.onActualPlayingChanged = { [weak self] playing in
-            guard let self = self else { return }
-            if self.isPlaying != playing {
-                self.isPlaying = playing
-                if playing {
-                    if self.wallClockSessionStartTime == nil {
-                        self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
-                    }
-                } else {
-                    self.recordListeningSession()
-                }
-            }
-            self.updateNowPlayingPlaybackInfo()
-        }
-
         coordinator.onProgress = { [weak self] time, word in
             guard let self = self else { return }
             self.currentTime = time
@@ -324,6 +342,7 @@ public class AudioPlaybackEngine: ObservableObject {
         
         setupTimeObserver()
         setupEndObserver()
+        setupPlayerObservers()
         
         chunks = []
         currentTime = 0
@@ -393,20 +412,11 @@ public class AudioPlaybackEngine: ObservableObject {
         updateNowPlayingPlaybackInfo()
     }
     
-    public func pause() {
+    public func pause(file: String = #file, line: Int = #line, function: String = #function) {
+        Log.audio.info("pause called from \(function):\(line)")
         cancelSpeculativeHandback()
-        if coordinator.isAppleActive {
-            coordinator.pause()
-            isPlaying = false
-            recordListeningSession()
-            saveDocumentProgress()
-            updateNowPlayingPlaybackInfo()
-            evaluateAudioSession()
-            return
-        }
-        
-        coordinator.pause()
         queuePlayer?.pause()
+        coordinator.pause()
         isRecoveringFromUnderrun = false
         isPlaying = false
         updateNowPlayingPlaybackInfo()
@@ -749,7 +759,7 @@ public class AudioPlaybackEngine: ObservableObject {
                 guard let self = self else { return }
                 
                 // Monitor Kokoro buffer runway for underrun
-                if self.isPlaying && !self.coordinator.isAppleActive {
+                if (self.isPlaying || self.coordinator.contract?.desiredPlayIntent == .playing) && !self.coordinator.isAppleActive {
                     self.checkKokoroBufferUnderrun()
                 }
 
@@ -821,6 +831,38 @@ public class AudioPlaybackEngine: ObservableObject {
         }
     }
     
+    private func removePlayerObservers() {
+        playerTimeControlCancellable?.cancel()
+        playerTimeControlCancellable = nil
+    }
+
+    private func setupPlayerObservers() {
+        removePlayerObservers()
+        guard let player = queuePlayer else { return }
+        
+        playerTimeControlCancellable = player.publisher(for: \.timeControlStatus)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    guard !self.coordinator.isAppleActive else { return }
+                    
+                    let playing = (status != .paused)
+                    if self.isPlaying != playing {
+                        self.isPlaying = playing
+                        if playing {
+                            if self.wallClockSessionStartTime == nil {
+                                self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+                            }
+                        } else {
+                            self.recordListeningSession()
+                        }
+                        self.updateNowPlayingPlaybackInfo()
+                    }
+                }
+            }
+    }
+    
     private func setupEndObserver() {
         removeEndObserver()
         endObserverToken = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main) { [weak self] notification in
@@ -844,7 +886,7 @@ public class AudioPlaybackEngine: ObservableObject {
                         Task {
                             PlaybackCoordinator.shared.advanceNext()
                         }
-                    } else if self.isPlaying && !self.coordinator.isAppleActive {
+                    } else if (self.isPlaying || self.coordinator.contract?.desiredPlayIntent == .playing) && !self.coordinator.isAppleActive {
                         // Kokoro ran out of chunks before EOF: trigger fallback!
                         self.triggerFallbackToAppleSpeech(reason: "Kokoro audio buffer underrun (queue exhausted before EOF)")
                     }
@@ -869,6 +911,16 @@ public class AudioPlaybackEngine: ObservableObject {
                 switch type {
                 case .began:
                     self.wasPlayingBeforeInterruption = self.isPlaying
+                    if #available(iOS 14.5, *) {
+                        if let reasonValue = userInfo[AVAudioSessionInterruptionReasonKey] as? UInt,
+                           let reason = AVAudioSession.InterruptionReason(rawValue: reasonValue) {
+                            self.wasSuspendedBeforeInterruption = (reason == .appWasSuspended)
+                        } else {
+                            self.wasSuspendedBeforeInterruption = false
+                        }
+                    } else {
+                        self.wasSuspendedBeforeInterruption = false
+                    }
                     if self.coordinator.isAppleActive {
                         _ = self.coordinator.beginInterruption()
                         self.isPlaying = false
@@ -876,28 +928,94 @@ public class AudioPlaybackEngine: ObservableObject {
                         self.recordListeningSession()
                         self.saveDocumentProgress()
                     } else {
+                        let wasPlaying = self.isPlaying
                         self.pause()
+                        self.wasPlayingBeforeInterruption = wasPlaying
                     }
                 case .ended:
+                    var shouldResume: Bool = false
                     if let optionsValue = optionsValue {
                         let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-                        let shouldResume = options.contains(.shouldResume) && self.wasPlayingBeforeInterruption
-                        if self.coordinator.isAppleActive {
-                            if self.coordinator.endInterruption(shouldResume: shouldResume) {
-                                self.isPlaying = shouldResume
-                                if shouldResume {
-                                    self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
-                                }
-                                self.updateNowPlayingPlaybackInfo()
-                            }
-                        } else {
-                            if shouldResume {
-                                self.play()
-                            }
+                        shouldResume = options.contains(.shouldResume)
+                    }
+                    
+                    if #available(iOS 14.5, *) {
+                        if self.wasSuspendedBeforeInterruption {
+                            shouldResume = true
                         }
+                    }
+                    
+                    self.wasSuspendedBeforeInterruption = false
+                    
+                    shouldResume = shouldResume && self.wasPlayingBeforeInterruption
+                    
+                    if self.coordinator.isAppleActive {
+                        if self.coordinator.endInterruption(shouldResume: shouldResume) {
+                            self.isPlaying = shouldResume
+                            if shouldResume {
+                                self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+                            }
+                            self.updateNowPlayingPlaybackInfo()
+                        }
+                    } else {
+                        if shouldResume {
+                            self.play()
+                        }
+                    }
+                    
+                    if !shouldResume {
+                        self.pause()
                     }
                 @unknown default:
                     break
+                }
+            }
+        }
+        
+        mediaServicesLostObserverToken = NotificationCenter.default.addObserver(forName: AVAudioSession.mediaServicesWereLostNotification, object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.wasPlayingBeforeMediaServicesLoss = self.isPlaying || (self.coordinator.contract?.desiredPlayIntent == .playing)
+                self.pause()
+            }
+        }
+        
+        mediaServicesResetObserverToken = NotificationCenter.default.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                
+                do {
+                    try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
+                    try AVAudioSession.sharedInstance().setActive(true)
+                } catch {
+                    Log.audio.error("Failed to reset audio session: \(error.localizedDescription, privacy: .public)")
+                }
+                
+                let wasPlaying = self.wasPlayingBeforeMediaServicesLoss
+                self.wasPlayingBeforeMediaServicesLoss = false
+                
+                if !self.coordinator.isAppleActive {
+                    self.queuePlayer = AVQueuePlayer()
+                    self.queuePlayer?.automaticallyWaitsToMinimizeStalling = false
+                    self.setupTimeObserver()
+                    self.setupEndObserver()
+                    self.setupPlayerObservers()
+                    
+                    for chunk in self.chunks {
+                        self.queuePlayer?.insert(AVPlayerItem(url: chunk.url), after: nil)
+                    }
+                    
+                    if wasPlaying {
+                        self.isPlaying = true
+                        self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+                    }
+                    
+                    self.seek(to: self.currentTime)
+                } else {
+                    self.coordinator.seek(to: self.currentTime)
+                    if wasPlaying {
+                        self.play()
+                    }
                 }
             }
         }
@@ -930,6 +1048,7 @@ public class AudioPlaybackEngine: ObservableObject {
 
         willEnterForegroundObserverToken = NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
+                await KokoroTTSService.shared.getEngineActorSync()?.setBackgroundPaused(false)
                 self?.handleWillEnterForeground()
             }
         }
@@ -1016,7 +1135,7 @@ public class AudioPlaybackEngine: ObservableObject {
     }
 
     private func checkKokoroBufferUnderrun() {
-        guard isPlaying, !coordinator.isAppleActive, currentDocument != nil else { return }
+        guard (isPlaying || coordinator.contract?.desiredPlayIntent == .playing), !coordinator.isAppleActive, currentDocument != nil else { return }
         
         let runway = bufferedTime - currentTime
         let itemsCount = queuePlayer?.items().count ?? 0
@@ -1059,7 +1178,7 @@ public class AudioPlaybackEngine: ObservableObject {
         }
         
         // 4. Trigger handoff in coordinator while state and cursors are fully resolved
-        let wasPlaying = self.isPlaying
+        let wasPlaying = self.isPlaying || (coordinator.contract?.desiredPlayIntent == .playing)
         let success = coordinator.triggerFallback(reason: reason)
         
         // 5. Defer removing Kokoro items and clearing chunks until after coordinator handoff
@@ -1078,8 +1197,8 @@ public class AudioPlaybackEngine: ObservableObject {
 
     // MARK: - Speculative Foreground Handback (Phase 6)
 
-    @objc private func handleWillEnterForeground() {
-        guard coordinator.isFallbackActive, let doc = currentDocument, isPlaying else { return }
+    private func handleWillEnterForeground() {
+        guard coordinator.isFallbackActive, let doc = currentDocument, (isPlaying || coordinator.contract?.desiredPlayIntent == .playing) else { return }
         Log.audio.info("Application returning to foreground during Apple Speech fallback; initiating speculative handback preparation.")
         triggerSpeculativeHandbackPreparation(for: doc)
     }

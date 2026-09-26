@@ -140,6 +140,10 @@ actor KokoroEngineActor {
         backgroundState.isPaused = false
     }
     
+    func setBackgroundPaused(_ paused: Bool) {
+        backgroundState.isPaused = paused
+    }
+    
     func setCancelled(_ cancelled: Bool) {
         self.isCancelled = cancelled
     }
@@ -701,6 +705,10 @@ class KokoroTTSService: ObservableObject {
     
     func resumeEngine() async {
         await engineActor?.resumeFromBackground()
+    }
+    
+    func setBackgroundPaused(_ paused: Bool) async {
+        await engineActor?.setBackgroundPaused(paused)
     }
     
     func resetCancellation() async {

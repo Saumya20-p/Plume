@@ -239,6 +239,271 @@ final class KokoroPlaybackFoundationTests: XCTestCase {
         XCTAssertEqual(played.duration, 1.5)
     }
 
+    func testPlaybackRoutingCoordinatorPauseStopsAppleProducerUnconditionally() {
+        let producer = AppleSpeechProducer()
+        let coordinator = PlaybackRoutingCoordinator(appleProducer: producer)
+        let document = Document(title: "Title", bodyText: "First sentence. Second sentence.")
+        let preferences = VoicePreferences(
+            primary: .kokoro(identifier: "af_heart"),
+            fallbackAppleVoiceIdentifier: nil
+        )
+        let snapshot = PlaybackSessionSnapshot(documentID: document.id, preferences: preferences)
+        _ = coordinator.begin(document: document, snapshot: snapshot)
+
+        // When isAppleActive is false:
+        XCTAssertFalse(coordinator.isAppleActive)
+        let prevGeneration = producer.generationID
+        coordinator.pause()
+        XCTAssertFalse(coordinator.isPlaying)
+        // Verify appleProducer.stop() was called unconditionally (which increments generationID)
+        XCTAssertGreaterThan(producer.generationID, prevGeneration)
+    }
+
+    func testPlaybackRoutingCoordinatorExecuteHandbackDoesNotTriggerOnActualPlayingChanged() {
+        let coordinator = PlaybackRoutingCoordinator()
+        let document = Document(title: "Title", bodyText: "First sentence. Second sentence.")
+        let preferences = VoicePreferences(
+            primary: .kokoro(identifier: "af_heart"),
+            fallbackAppleVoiceIdentifier: "com.apple.speech.voice.Alex"
+        )
+        let snapshot = PlaybackSessionSnapshot(documentID: document.id, preferences: preferences)
+        _ = coordinator.begin(document: document, snapshot: snapshot)
+
+        // Trigger fallback so isFallbackActive is true
+        _ = coordinator.triggerFallback(reason: "test")
+        XCTAssertTrue(coordinator.isFallbackActive)
+
+        // Stage a chunk for handback
+        let session = PlaybackGenerationSession(documentID: document.id, voice: .kokoro(identifier: "af_heart"))
+        let identity = GeneratedAudioChunkIdentity(
+            session: session,
+            segmentID: DocumentSegmentID(documentID: document.id, ordinal: 0, utf16Range: UTF16TextRange(location: 0, length: 15))
+        )
+        let chunk = AudioChunk(identity: identity, fileURL: URL(fileURLWithPath: "/tmp/test.m4a"), duration: 1.0, timestamps: [])
+        coordinator.stageHandbackChunk(chunk, session: session)
+
+        var onActualPlayingChangedCalled = false
+        coordinator.onActualPlayingChanged = { _ in
+            onActualPlayingChangedCalled = true
+        }
+
+        let executed = coordinator.executeHandback()
+        XCTAssertTrue(executed)
+        XCTAssertFalse(onActualPlayingChangedCalled, "executeHandback must not broadcast onActualPlayingChanged")
+    }
+
+    func testStageHandbackChunkAllowsUpcomingSentenceKPlusOneWhileSpeakingSentenceK() {
+        let coordinator = PlaybackRoutingCoordinator()
+        let document = Document(title: "Title", bodyText: "Sentence zero. Sentence one. Sentence two.")
+        let preferences = VoicePreferences(
+            primary: .kokoro(identifier: "af_heart"),
+            fallbackAppleVoiceIdentifier: "com.apple.speech.voice.Alex"
+        )
+        let snapshot = PlaybackSessionSnapshot(documentID: document.id, preferences: preferences)
+        _ = coordinator.begin(document: document, snapshot: snapshot)
+
+        _ = coordinator.triggerFallback(reason: "test")
+        XCTAssertTrue(coordinator.isFallbackActive)
+
+        let session = PlaybackGenerationSession(documentID: document.id, voice: .kokoro(identifier: "af_heart"))
+        
+        // Simulate Apple Speech speaking Sentence 1 (K = 1)
+        coordinator.currentlySpeakingSegmentOrdinal = 1
+        
+        // Chunk for Sentence 1 (currently speaking) must be discarded as stale
+        let chunkCurrent = AudioChunk(
+            identity: GeneratedAudioChunkIdentity(
+                session: session,
+                segmentID: DocumentSegmentID(documentID: document.id, ordinal: 1, utf16Range: UTF16TextRange(location: 16, length: 13))
+            ),
+            fileURL: URL(fileURLWithPath: "/tmp/chunk1.m4a"),
+            duration: 1.0,
+            timestamps: []
+        )
+        coordinator.stageHandbackChunk(chunkCurrent, session: session)
+        XCTAssertFalse(coordinator.stagedHandbackChunks.contains(where: { $0.identity.segmentID.ordinal == 1 }))
+
+        // Chunk for Sentence 0 (already completed) must be discarded as stale
+        let chunkPast = AudioChunk(
+            identity: GeneratedAudioChunkIdentity(
+                session: session,
+                segmentID: DocumentSegmentID(documentID: document.id, ordinal: 0, utf16Range: UTF16TextRange(location: 0, length: 14))
+            ),
+            fileURL: URL(fileURLWithPath: "/tmp/chunk0.m4a"),
+            duration: 1.0,
+            timestamps: []
+        )
+        coordinator.stageHandbackChunk(chunkPast, session: session)
+        XCTAssertFalse(coordinator.stagedHandbackChunks.contains(where: { $0.identity.segmentID.ordinal == 0 }))
+
+        // Chunk for Sentence 2 (K+1 = 2) must NOT be discarded
+        let chunkNext = AudioChunk(
+            identity: GeneratedAudioChunkIdentity(
+                session: session,
+                segmentID: DocumentSegmentID(documentID: document.id, ordinal: 2, utf16Range: UTF16TextRange(location: 30, length: 13))
+            ),
+            fileURL: URL(fileURLWithPath: "/tmp/chunk2.m4a"),
+            duration: 1.0,
+            timestamps: []
+        )
+        coordinator.stageHandbackChunk(chunkNext, session: session)
+        XCTAssertTrue(coordinator.stagedHandbackChunks.contains(where: { $0.identity.segmentID.ordinal == 2 }), "Sentence K+1 must be staged while Apple Speech is speaking Sentence K")
+    }
+
+    func testStageHandbackChunkAllowsUpcomingSentenceKPlusTwoAndRejectsNegativeOrdinal() {
+        let coordinator = PlaybackRoutingCoordinator()
+        let document = Document(title: "Title", bodyText: "Sentence zero. Sentence one. Sentence two. Sentence three.")
+        let preferences = VoicePreferences(
+            primary: .kokoro(identifier: "af_heart"),
+            fallbackAppleVoiceIdentifier: "com.apple.speech.voice.Alex"
+        )
+        let snapshot = PlaybackSessionSnapshot(documentID: document.id, preferences: preferences)
+        _ = coordinator.begin(document: document, snapshot: snapshot)
+
+        _ = coordinator.triggerFallback(reason: "test")
+        XCTAssertTrue(coordinator.isFallbackActive)
+
+        let session = PlaybackGenerationSession(documentID: document.id, voice: .kokoro(identifier: "af_heart"))
+        coordinator.currentlySpeakingSegmentOrdinal = 1 // Speaking sentence 1 (K = 1)
+
+        // Chunk with negative ordinal must be rejected
+        let chunkNegative = AudioChunk(
+            identity: GeneratedAudioChunkIdentity(
+                session: session,
+                segmentID: DocumentSegmentID(documentID: document.id, ordinal: -1, utf16Range: UTF16TextRange(location: 0, length: 5))
+            ),
+            fileURL: URL(fileURLWithPath: "/tmp/chunkNeg.m4a"),
+            duration: 1.0,
+            timestamps: []
+        )
+        coordinator.stageHandbackChunk(chunkNegative, session: session)
+        XCTAssertFalse(coordinator.stagedHandbackChunks.contains(where: { $0.identity.segmentID.ordinal == -1 }))
+
+        // Chunk for Sentence 3 (K+2 = 3) must be allowed
+        let chunkNextNext = AudioChunk(
+            identity: GeneratedAudioChunkIdentity(
+                session: session,
+                segmentID: DocumentSegmentID(documentID: document.id, ordinal: 3, utf16Range: UTF16TextRange(location: 45, length: 14))
+            ),
+            fileURL: URL(fileURLWithPath: "/tmp/chunk3.m4a"),
+            duration: 1.0,
+            timestamps: []
+        )
+        coordinator.stageHandbackChunk(chunkNextNext, session: session)
+        XCTAssertTrue(coordinator.stagedHandbackChunks.contains(where: { $0.identity.segmentID.ordinal == 3 }), "Sentence K+2 must be staged while Apple Speech is speaking Sentence K")
+    }
+
+    func testStageHandbackChunkBetweenSentencesAllowsUpcomingSentence() {
+        let coordinator = PlaybackRoutingCoordinator()
+        let document = Document(title: "Title", bodyText: "Sentence zero. Sentence one. Sentence two.")
+        let preferences = VoicePreferences(
+            primary: .kokoro(identifier: "af_heart"),
+            fallbackAppleVoiceIdentifier: "com.apple.speech.voice.Alex"
+        )
+        let snapshot = PlaybackSessionSnapshot(documentID: document.id, preferences: preferences)
+        _ = coordinator.begin(document: document, snapshot: snapshot)
+
+        _ = coordinator.triggerFallback(reason: "test")
+        XCTAssertTrue(coordinator.isFallbackActive)
+
+        let session = PlaybackGenerationSession(documentID: document.id, voice: .kokoro(identifier: "af_heart"))
+        
+        // Between sentences: currentlySpeakingSegmentOrdinal is nil, committed ordinal is 0
+        coordinator.currentlySpeakingSegmentOrdinal = nil
+        let cursor0 = PlaybackSourceCursor(segmentOrdinal: 0, globalUTF16Offset: 14)!
+        coordinator.commitSentenceBoundary(at: cursor0)
+
+        // Chunk 0 (already committed with offset > 0) must be discarded
+        let chunk0 = AudioChunk(
+            identity: GeneratedAudioChunkIdentity(
+                session: session,
+                segmentID: DocumentSegmentID(documentID: document.id, ordinal: 0, utf16Range: UTF16TextRange(location: 0, length: 14))
+            ),
+            fileURL: URL(fileURLWithPath: "/tmp/chunk0.m4a"),
+            duration: 1.0,
+            timestamps: []
+        )
+        coordinator.stageHandbackChunk(chunk0, session: session)
+        XCTAssertFalse(coordinator.stagedHandbackChunks.contains(where: { $0.identity.segmentID.ordinal == 0 }))
+
+        // Chunk 1 (upcoming) must be staged
+        let chunk1 = AudioChunk(
+            identity: GeneratedAudioChunkIdentity(
+                session: session,
+                segmentID: DocumentSegmentID(documentID: document.id, ordinal: 1, utf16Range: UTF16TextRange(location: 16, length: 13))
+            ),
+            fileURL: URL(fileURLWithPath: "/tmp/chunk1.m4a"),
+            duration: 1.0,
+            timestamps: []
+        )
+        coordinator.stageHandbackChunk(chunk1, session: session)
+        XCTAssertTrue(coordinator.stagedHandbackChunks.contains(where: { $0.identity.segmentID.ordinal == 1 }))
+    }
+
+    func testAudioGenerationManagerSpeculativePreparationRestartsWhenAlreadyGenerating() {
+        let manager = AudioGenerationManager.shared
+        let engine = AudioPlaybackEngine.shared
+        let document = Document(title: "Title", bodyText: "Sentence zero. Sentence one. Sentence two.")
+        engine.load(document: document)
+        _ = engine.coordinator.triggerFallback(reason: "test")
+
+        // First start
+        manager.startSpeculativePreparation(document: document, playbackEngine: engine, startChunkIndex: 0)
+        XCTAssertTrue(manager.isSpeculativeGenerating)
+
+        // Second start with a different chunk index while already generating:
+        // Must cancel previous preparation and restart
+        manager.startSpeculativePreparation(document: document, playbackEngine: engine, startChunkIndex: 1)
+        XCTAssertTrue(manager.isSpeculativeGenerating)
+        manager.cancelSpeculativePreparation()
+        XCTAssertFalse(manager.isSpeculativeGenerating)
+    }
+
+    func testAudioPlaybackEnginePauseUnconditionallyPausesBoth() {
+        let engine = AudioPlaybackEngine.shared
+        let document = Document(title: "Title", bodyText: "Sample test sentence.")
+        engine.load(document: document)
+        
+        // Trigger fallback so coordinator.isAppleActive becomes true
+        _ = engine.coordinator.triggerFallback(reason: "Test pause asymmetry")
+        XCTAssertTrue(engine.coordinator.isAppleActive)
+        
+        // In the prior buggy implementation, isAppleActive would cause pause() to return early
+        // without pausing queuePlayer. Now both must be paused unconditionally.
+        engine.pause()
+        XCTAssertFalse(engine.isPlaying)
+        XCTAssertEqual(engine.coordinator.desiredPlayIntent, .paused)
+    }
+
+    func testAudioPlaybackEngineDoesNotToggleIsPlayingViaCoordinatorCallback() {
+        let engine = AudioPlaybackEngine.shared
+        let document = Document(title: "Title", bodyText: "Sample test sentence.")
+        engine.load(document: document)
+        
+        engine.isPlaying = true
+        // If someone triggers onActualPlayingChanged on the coordinator, engine.isPlaying must remain unaffected
+        engine.coordinator.onActualPlayingChanged?(false)
+        XCTAssertTrue(engine.isPlaying, "Engine isPlaying must not be clobbered by coordinator onActualPlayingChanged")
+        engine.pause()
+    }
+
+    func testAudioPlaybackEngineFallbackPreservesPlayingIntentWhenQueuePaused() {
+        let engine = AudioPlaybackEngine.shared
+        let document = Document(title: "Title", bodyText: "Sample test sentence for fallback.")
+        engine.load(document: document)
+        
+        // Simulate active play intent
+        _ = engine.coordinator.play()
+        engine.isPlaying = true
+        
+        // Trigger fallback
+        engine.triggerFallbackToAppleSpeech(reason: "Buffer underrun simulation")
+        
+        // Engine must remain playing in fallback
+        XCTAssertTrue(engine.isPlaying)
+        engine.pause()
+    }
+
     private func withDefaults(_ body: (UserDefaults) throws -> Void) throws {
         let suiteName = "KokoroPlaybackFoundationTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

@@ -280,20 +280,19 @@ struct PlayerControlsView: View {
                         playbackEngine.togglePlayPause()
                     }
                 }) {
-                    Group {
-                        if !playbackEngine.isAppleActive && generationManager.generatingDocumentIDs.contains(document.id) && playbackEngine.chunks.isEmpty && document.audioFileURL == nil {
-                            ProgressView()
-                                .tint(.white)
-                        } else {
-                            Image(systemName: playbackEngine.isPlaying ? "pause.fill" : "play.fill")
-                                .contentTransition(.symbolEffect(.replace))
-                        }
+                    let isGenerating = !playbackEngine.isAppleActive && generationManager.generatingDocumentIDs.contains(document.id) && playbackEngine.chunks.isEmpty && document.audioFileURL == nil
+                    if isGenerating {
+                        ThinkingOrbView()
+                            .frame(width: 52, height: 52)
+                    } else {
+                        Image(systemName: playbackEngine.isPlaying ? "pause.fill" : "play.fill")
+                            .contentTransition(.symbolEffect(.replace))
+                            .font(.title2)
+                            .frame(width: 52, height: 52)
+                            .background(DesignSystem.accent)
+                            .foregroundStyle(.white)
+                            .clipShape(Circle())
                     }
-                    .font(.title2)
-                    .frame(width: 52, height: 52)
-                    .background(DesignSystem.accent)
-                    .foregroundStyle(.white)
-                    .clipShape(Circle())
                 }
                 .buttonStyle(ScaleButtonStyle())
                 

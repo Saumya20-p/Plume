@@ -23,6 +23,7 @@ final class PlaybackRoutingCoordinator {
     private var nextSegmentIndex = 0
     private var terminalCallbacks = Set<UUID>()
     private var appleVoice: AVSpeechSynthesisVoice?
+    private var resolvedFallbackIdentifier: String?
     private var speechRateMultiplier: Float = 1.0
 
 
@@ -41,7 +42,7 @@ final class PlaybackRoutingCoordinator {
     private(set) var isHandbackPending: Bool = false
     private(set) var stagedHandbackChunks: [AudioChunk] = []
     private(set) var stagedHandbackSession: PlaybackGenerationSession?
-    private(set) var currentlySpeakingSegmentOrdinal: Int?
+    internal(set) var currentlySpeakingSegmentOrdinal: Int?
 
     // MARK: - Initialization
 
@@ -170,6 +171,7 @@ final class PlaybackRoutingCoordinator {
         contract = newContract
         nextSegmentIndex = firstSegmentIndex(after: cursor)
         appleVoice = nil
+        resolvedFallbackIdentifier = nil
 
         if isAppleActive {
             appleVoice = resolveAppleVoice(identifier: snapshot.primaryVoice.identifier)
@@ -184,6 +186,11 @@ final class PlaybackRoutingCoordinator {
                 notifyState()
                 return false
             }
+        } else {
+            let fallbackIdentifier = snapshot.fallbackAppleVoiceIdentifier
+                ?? VoicePreferencesStore().load().fallbackAppleVoiceIdentifier
+            appleVoice = resolveAppleVoice(identifier: fallbackIdentifier)
+            resolvedFallbackIdentifier = fallbackIdentifier
         }
 
         notifyState()
@@ -245,14 +252,13 @@ final class PlaybackRoutingCoordinator {
     func pause() {
         cancelPendingHandback()
         currentlySpeakingSegmentOrdinal = nil
-        guard isAppleActive else {
-            contract?.pause()
-            notifyState()
-            return
-        }
         appleProducer.stop()
         terminalCallbacks.removeAll(keepingCapacity: true)
         contract?.pause()
+        guard isAppleActive else {
+            notifyState()
+            return
+        }
         let resetCursor = contract?.committedCursor ?? contract?.sourceCursor
         if let resetCursor {
             _ = contract?.seek(to: resetCursor)
@@ -425,6 +431,45 @@ final class PlaybackRoutingCoordinator {
         }
     }
 
+    /// Dynamically updates preferences and immediately applies Apple voice changes.
+    func updateVoicePreferences(_ preferences: VoicePreferences) {
+        guard var currentContract = self.contract else { return }
+        
+        let didFallbackChange = currentContract.fallbackAppleVoiceIdentifier != preferences.fallbackAppleVoiceIdentifier
+        let didPrimaryChange = currentContract.primaryVoice != preferences.primary
+        
+        guard didFallbackChange || didPrimaryChange else { return }
+        
+        let wasAppleActive = isAppleActive
+        currentContract.updatePreferences(preferences)
+        self.contract = currentContract
+        let isNowAppleActive = isAppleActive
+        
+        let activeAppleVoiceChanged: Bool
+        if isFallbackActive {
+            activeAppleVoiceChanged = didFallbackChange
+        } else {
+            activeAppleVoiceChanged = wasAppleActive && isNowAppleActive && didPrimaryChange
+        }
+        
+        if activeAppleVoiceChanged {
+            let activeIdentifier = isFallbackActive ? preferences.fallbackAppleVoiceIdentifier : preferences.primary.identifier
+            let newVoice = resolveAppleVoice(identifier: activeIdentifier)
+            
+            if appleVoice?.identifier != newVoice?.identifier {
+                appleVoice = newVoice
+                if isFallbackActive {
+                    resolvedFallbackIdentifier = activeIdentifier
+                }
+                
+                if isPlaying {
+                    let resumeCursor = currentContract.displayCursor ?? currentContract.sourceCursor ?? currentContract.committedCursor ?? .beginning
+                    seek(to: resumeCursor)
+                }
+            }
+        }
+    }
+
     /// Triggers one-way fallback from Kokoro to Apple Speech.
     /// Seamlessly switches the active producer to AppleSpeechProducer and resumes
     /// exactly at the last spoken sentence or word boundary without crashing or stopping playback.
@@ -448,8 +493,10 @@ final class PlaybackRoutingCoordinator {
         // 1. Resolve fallback Apple voice from contract or stored preferences
         let fallbackIdentifier = contract?.fallbackAppleVoiceIdentifier
             ?? VoicePreferencesStore().load().fallbackAppleVoiceIdentifier
-            ?? "com.apple.speech.voice.Alex"
-        appleVoice = resolveAppleVoice(identifier: fallbackIdentifier)
+        if appleVoice == nil || resolvedFallbackIdentifier != fallbackIdentifier {
+            appleVoice = resolveAppleVoice(identifier: fallbackIdentifier)
+            resolvedFallbackIdentifier = fallbackIdentifier
+        }
 
         // 2. Determine target cursor (prefer active display/source cursor to avoid repeating mid-chunk)
         let targetCursor = resumeCursor
@@ -507,11 +554,24 @@ final class PlaybackRoutingCoordinator {
         guard isFallbackActive else { return }
 
         let chunkOrdinal = chunk.identity.segmentID.ordinal
+        guard chunkOrdinal >= 0 else { return }
         let committedOrdinal = contract?.committedCursor?.segmentOrdinal ?? -1
         let currentSpeaking = currentlySpeakingSegmentOrdinal ?? -1
 
-        // Discard chunk if it has already completed or is currently being spoken by Apple Speech
-        if chunkOrdinal <= committedOrdinal || chunkOrdinal == currentSpeaking {
+        // Discard chunk if it has already completed or is currently being spoken by Apple Speech.
+        // If Apple Speech is currently speaking Sentence K, do NOT discard a staged chunk for Sentence K+1.
+        let isStale: Bool
+        if currentSpeaking >= 0 {
+            if chunkOrdinal == currentSpeaking + 1 {
+                isStale = false
+            } else {
+                isStale = chunkOrdinal <= currentSpeaking
+            }
+        } else {
+            isStale = chunkOrdinal < committedOrdinal || (chunkOrdinal == committedOrdinal && (contract?.committedCursor?.globalUTF16Offset ?? 0) > 0)
+        }
+
+        if isStale {
             Log.audio.warning("Discarding stale speculative chunk for ordinal \(chunkOrdinal) (committed: \(committedOrdinal), speaking: \(currentSpeaking))")
             return
         }
@@ -645,7 +705,6 @@ final class PlaybackRoutingCoordinator {
         }
 
         notifyState()
-        onActualPlayingChanged?(isPlaying)
         return true
     }
 
@@ -905,18 +964,20 @@ final class PlaybackRoutingCoordinator {
         notifyState()
     }
 
-    private func resolveAppleVoice(identifier: String) -> AVSpeechSynthesisVoice? {
+    private func resolveAppleVoice(identifier: String?) -> AVSpeechSynthesisVoice? {
         let provider = AVFoundationSpeechVoiceProvider()
         let candidates = provider.availableVoices()
-        let preferredLocale = candidates.first(where: { $0.identifier == identifier })?.language
+        let preferredLocale = identifier.flatMap { id in
+            candidates.first(where: { $0.identifier == id })?.language
+        } ?? AVSpeechSynthesisVoice.currentLanguageCode()
         let catalog = AppleSpeechVoiceCatalog(provider: provider, changeObserver: nil)
         let defaultCandidate = candidates.first(where: { candidate in
             guard case .default = candidate.quality,
                   !candidate.isNoveltyVoice,
                   !candidate.isPersonalVoice
             else { return false }
-            guard let preferredLocale else { return true }
-            return languageCode(candidate.language) == languageCode(preferredLocale)
+            let preferredLang = languageCode(preferredLocale) ?? "en"
+            return languageCode(candidate.language) == preferredLang
         })
         let resolution = AppleSpeechVoiceResolver.resolve(
             preferredIdentifier: identifier,
@@ -925,7 +986,7 @@ final class PlaybackRoutingCoordinator {
             compatibleSystemDefault: defaultCandidate
         )
         switch resolution {
-        case .chosen(let descriptor), .sameLocale(let descriptor):
+        case .chosen(let descriptor), .sameLocale(let descriptor), .highestQuality(let descriptor):
             if let voice = AVSpeechSynthesisVoice(identifier: descriptor.id) {
                 return voice
             }
@@ -937,9 +998,12 @@ final class PlaybackRoutingCoordinator {
             break
         }
         // Fallback for physical devices / simulators without enhanced voices downloaded
-        return AVSpeechSynthesisVoice(identifier: identifier)
-            ?? AVSpeechSynthesisVoice(language: "en-US")
-            ?? AVSpeechSynthesisVoice.speechVoices().first
+        if let identifier, let voice = AVSpeechSynthesisVoice(identifier: identifier) {
+            return voice
+        }
+        return AVSpeechSynthesisVoice(language: "en-US")
+            ?? candidates.first(where: { languageCode($0.language) == "en" }).flatMap { AVSpeechSynthesisVoice(identifier: $0.identifier) }
+            ?? candidates.first.flatMap { AVSpeechSynthesisVoice(identifier: $0.identifier) }
     }
 
     private func firstSegmentIndex(after cursor: PlaybackSourceCursor) -> Int {

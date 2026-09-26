@@ -318,6 +318,14 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
     var playbackState: PlaybackState { actualActivity }
     var state: PlaybackState { actualActivity }
 
+    mutating func updatePreferences(_ preferences: VoicePreferences) {
+        self.snapshot = PlaybackSessionSnapshot(
+            documentID: snapshot.documentID,
+            preferences: preferences,
+            sessionID: snapshot.sessionID
+        )
+    }
+
     private func accepts(_ cursor: PlaybackSourceCursor) -> Bool {
         cursor.globalUTF16Offset <= sourceUTF16Length
     }
@@ -719,6 +727,7 @@ typealias PlaybackStateMachine = PlaybackSessionContract
 nonisolated enum AppleSpeechVoiceResolutionReason: Equatable, Sendable {
     case chosen
     case sameLocale
+    case highestQuality
     case compatibleSystemDefault
     case unavailable
 }
@@ -726,12 +735,13 @@ nonisolated enum AppleSpeechVoiceResolutionReason: Equatable, Sendable {
 nonisolated enum AppleSpeechVoiceResolution: Equatable, Sendable {
     case chosen(AppleSpeechVoiceDescriptor)
     case sameLocale(AppleSpeechVoiceDescriptor)
+    case highestQuality(AppleSpeechVoiceDescriptor)
     case compatibleSystemDefault(AppleSpeechVoiceCandidate)
     case unavailable
 
     var voice: AppleSpeechVoiceDescriptor? {
         switch self {
-        case .chosen(let voice), .sameLocale(let voice):
+        case .chosen(let voice), .sameLocale(let voice), .highestQuality(let voice):
             return voice
         case .compatibleSystemDefault, .unavailable:
             return nil
@@ -749,6 +759,7 @@ nonisolated enum AppleSpeechVoiceResolution: Equatable, Sendable {
         switch self {
         case .chosen: return .chosen
         case .sameLocale: return .sameLocale
+        case .highestQuality: return .highestQuality
         case .compatibleSystemDefault: return .compatibleSystemDefault
         case .unavailable: return .unavailable
         }
@@ -757,7 +768,8 @@ nonisolated enum AppleSpeechVoiceResolution: Equatable, Sendable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         switch (lhs, rhs) {
         case (.chosen(let lhs), .chosen(let rhs)),
-             (.sameLocale(let lhs), .sameLocale(let rhs)):
+             (.sameLocale(let lhs), .sameLocale(let rhs)),
+             (.highestQuality(let lhs), .highestQuality(let rhs)):
             return lhs == rhs
         case (.compatibleSystemDefault(let lhs), .compatibleSystemDefault(let rhs)):
             return lhs.identifier == rhs.identifier
@@ -810,6 +822,13 @@ nonisolated enum AppleSpeechVoiceResolver {
             }
         }
 
+        let compatibleVoices = eligibleVoices.filter {
+            isCompatibleVoice($0, with: preferredLocale)
+        }
+        if let highestQuality = ordered(compatibleVoices).first {
+            return .highestQuality(highestQuality)
+        }
+
         if let compatibleSystemDefault,
            isCompatibleSystemDefault(compatibleSystemDefault, with: preferredLocale) {
             return .compatibleSystemDefault(compatibleSystemDefault)
@@ -842,6 +861,18 @@ nonisolated enum AppleSpeechVoiceResolver {
     private static func localeKey(_ language: String) -> String {
         Locale(identifier: language.replacingOccurrences(of: "_", with: "-")).identifier
             .lowercased()
+    }
+
+    private static func isCompatibleVoice(
+        _ voice: AppleSpeechVoiceDescriptor,
+        with preferredLocale: String?
+    ) -> Bool {
+        guard let voiceLang = languageCode(voice.language) else { return false }
+        guard let preferredLocale else {
+            return voiceLang == "en"
+        }
+        guard let preferredLang = languageCode(preferredLocale) else { return false }
+        return preferredLang == voiceLang
     }
 
     private static func isCompatibleSystemDefault(

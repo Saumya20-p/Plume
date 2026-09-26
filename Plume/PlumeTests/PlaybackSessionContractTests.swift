@@ -350,6 +350,78 @@ final class PlaybackSessionContractTests: XCTestCase {
         )
     }
 
+    func testResolverFallsBackToHighestQualityWhenSameLocaleMissingOrNil() {
+        let otherLocaleEnhanced = descriptor("other-enhanced", language: "en-GB", quality: .enhanced)
+        let otherLocalePremium = descriptor("other-premium", language: "en-GB", quality: .premium)
+        let systemDefault = candidate("system-default", language: "en-US", quality: .default)
+
+        // Preferred voice missing, preferred locale en-US has no eligible voice, but en-GB premium/enhanced are available
+        let result = AppleSpeechVoiceResolver.resolve(
+            preferredIdentifier: "missing",
+            preferredLocale: "en-US",
+            eligibleVoices: [otherLocaleEnhanced, otherLocalePremium],
+            compatibleSystemDefault: systemDefault
+        )
+        XCTAssertEqual(result, .highestQuality(otherLocalePremium))
+        XCTAssertEqual(result.reason, .highestQuality)
+        XCTAssertEqual(result.voice?.id, "other-premium")
+
+        // No preferred identifier and no preferred locale (System Default fallback preference)
+        let defaultFallback = AppleSpeechVoiceResolver.resolve(
+            preferredIdentifier: nil,
+            preferredLocale: nil,
+            eligibleVoices: [otherLocaleEnhanced, otherLocalePremium],
+            compatibleSystemDefault: systemDefault
+        )
+        XCTAssertEqual(defaultFallback, .highestQuality(otherLocalePremium))
+        XCTAssertEqual(defaultFallback.reason, .highestQuality)
+        XCTAssertEqual(defaultFallback.voice?.id, "other-premium")
+    }
+
+    func testResolverRejectsIncompatibleVoiceWhenPreferredLocaleNilOrDifferentLanguage() {
+        let frenchPremium = descriptor("french-premium", language: "fr-FR", quality: .premium)
+        let frenchEnhanced = descriptor("french-enhanced", language: "fr-FR", quality: .enhanced)
+        let systemDefault = candidate("system-default", language: "en-US", quality: .default)
+
+        // When preferred locale is nil, foreign voice is rejected in favor of English compatible system default
+        let nilLocaleResult = AppleSpeechVoiceResolver.resolve(
+            preferredIdentifier: nil,
+            preferredLocale: nil,
+            eligibleVoices: [frenchPremium, frenchEnhanced],
+            compatibleSystemDefault: systemDefault
+        )
+        XCTAssertEqual(nilLocaleResult, .compatibleSystemDefault(systemDefault))
+        XCTAssertEqual(nilLocaleResult.reason, .compatibleSystemDefault)
+        XCTAssertNil(nilLocaleResult.voice)
+
+        // When preferred locale is en-US, foreign voice is rejected in favor of English compatible system default
+        let enUsResult = AppleSpeechVoiceResolver.resolve(
+            preferredIdentifier: "missing",
+            preferredLocale: "en-US",
+            eligibleVoices: [frenchPremium],
+            compatibleSystemDefault: systemDefault
+        )
+        XCTAssertEqual(enUsResult, .compatibleSystemDefault(systemDefault))
+        XCTAssertEqual(enUsResult.reason, .compatibleSystemDefault)
+        XCTAssertNil(enUsResult.voice)
+    }
+
+    func testResolverPrefersSameLocaleOverHigherQualityDifferentLocale() {
+        let sameLocaleEnhanced = descriptor("us-enhanced", language: "en-US", quality: .enhanced)
+        let otherLocalePremium = descriptor("gb-premium", language: "en-GB", quality: .premium)
+        let systemDefault = candidate("system-default", language: "en-US", quality: .default)
+
+        let result = AppleSpeechVoiceResolver.resolve(
+            preferredIdentifier: nil,
+            preferredLocale: "en-US",
+            eligibleVoices: [otherLocalePremium, sameLocaleEnhanced],
+            compatibleSystemDefault: systemDefault
+        )
+        XCTAssertEqual(result, .sameLocale(sameLocaleEnhanced))
+        XCTAssertEqual(result.reason, .sameLocale)
+        XCTAssertEqual(result.voice?.id, "us-enhanced")
+    }
+
     func testResolverRejectsIncompatibleOrUnsafeSystemDefault() {
         let unsafeCandidates = [
             candidate("novelty", language: "en-US", quality: .default, novelty: true),

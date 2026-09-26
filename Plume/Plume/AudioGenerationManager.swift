@@ -60,7 +60,17 @@ public class AudioGenerationManager: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // Resume Metal GPU work when returning to foreground
+        // Resume Metal GPU work immediately when returning to foreground
+        // (willEnterForeground rather than waiting for didBecomeActive to eliminate 400ms cold start latency)
+        NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
+            .sink { [weak self] _ in
+                guard self != nil else { return }
+                MainActor.assumeIsolated {
+                    KokoroTTSService.shared.getEngineActorSync()?.backgroundState.isPaused = false
+                }
+            }
+            .store(in: &cancellables)
+        
         NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in
                 guard self != nil else { return }
@@ -113,6 +123,7 @@ public class AudioGenerationManager: ObservableObject {
             }
             
             guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { return }
+            await KokoroTTSService.shared.resetCancellation()
             
             // Prevent the device from sleeping while generating in the foreground
             UIApplication.shared.isIdleTimerDisabled = true
@@ -222,7 +233,11 @@ public class AudioGenerationManager: ObservableObject {
         generationTask = nil
         
         // Also tell the TTS engine to stop
+        let previousCancel = cancellationTask
         cancellationTask = Task {
+            if let previousCancel {
+                await previousCancel.value
+            }
             await KokoroTTSService.shared.cancelGeneration()
         }
         
@@ -247,10 +262,13 @@ public class AudioGenerationManager: ObservableObject {
         playbackEngine: AudioPlaybackEngine,
         startChunkIndex: Int
     ) {
-        guard !isGeneratingAny else { return }
-        cancelSpeculativePreparation()
-
         guard startChunkIndex >= 0 else { return }
+
+        // If already generating, cancel the existing generation and restart with new startChunkIndex
+        if !generatingDocumentIDs.isEmpty {
+            cancelCurrentGeneration()
+        }
+        cancelSpeculativePreparation()
 
         isSpeculativeGenerating = true
         generationMode = .preparationOnly
@@ -267,11 +285,19 @@ public class AudioGenerationManager: ObservableObject {
         speculativeGenerationTask = Task { @MainActor [weak self, weak playbackEngine] in
             guard let self = self, let playbackEngine = playbackEngine else { return }
             defer {
-                self.isSpeculativeGenerating = false
-                self.speculativeGenerationTask = nil
-                self.generationMode = .standard
-                self.generationProgress = nil
+                if self.speculativeSessionID == session.id {
+                    self.isSpeculativeGenerating = false
+                    self.speculativeGenerationTask = nil
+                    self.generationMode = .standard
+                    self.generationProgress = nil
+                }
             }
+
+            if let cancelTask = self.cancellationTask {
+                await cancelTask.value
+            }
+            guard !Task.isCancelled, playbackEngine.isFallbackActive else { return }
+            await KokoroTTSService.shared.resetCancellation()
 
             do {
                 let generator = try await KokoroTTSService.shared.synthesizeGenerator(
@@ -324,6 +350,12 @@ public class AudioGenerationManager: ObservableObject {
         document: Document,
         chunkIndex: Int
     ) async throws -> AudioChunk? {
+        if let cancelTask = cancellationTask {
+            await cancelTask.value
+        }
+        try Task.checkCancellation()
+        await KokoroTTSService.shared.resetCancellation()
+
         let session = KokoroGenerationSessionFactory.make(
             documentID: document.id,
             defaults: .standard
@@ -355,7 +387,11 @@ public class AudioGenerationManager: ObservableObject {
         generationMode = .standard
         speculativeSessionID = nil
         generationProgress = nil
+        let previousCancel = cancellationTask
         cancellationTask = Task {
+            if let previousCancel {
+                await previousCancel.value
+            }
             await KokoroTTSService.shared.cancelGeneration()
         }
     }

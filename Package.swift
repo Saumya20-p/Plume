@@ -6,6 +6,7 @@ import PackageDescription
 // runtime/MLX sources into a second implementation.
 let package = Package(
     name: "PlumeHostHarness",
+    defaultLocalization: "en",
     platforms: [
         .macOS(.v15)
     ],

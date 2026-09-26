@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import Plume
 
 @MainActor
@@ -90,6 +91,35 @@ final class PlaybackVoiceFoundationTests: XCTestCase {
 
         XCTAssertNil(catalog)
         XCTAssertTrue(changeObserver.observation.isCancelled)
+    }
+
+    func testAVFoundationSpeechVoiceProviderCachingAndInvalidation() {
+        let testCandidate = candidate("test-voice", language: "en-US", quality: .premium)
+        AVFoundationSpeechVoiceProvider.setCachedCandidates([testCandidate])
+        XCTAssertEqual(AVFoundationSpeechVoiceProvider.cachedCandidates?.map(\.identifier), ["test-voice"])
+
+        let provider = AVFoundationSpeechVoiceProvider()
+        let voices = provider.availableVoices()
+        XCTAssertEqual(voices.map(\.identifier), ["test-voice"])
+
+        AVFoundationSpeechVoiceProvider.invalidateCache()
+        XCTAssertNil(AVFoundationSpeechVoiceProvider.cachedCandidates)
+    }
+
+    func testAVFoundationSpeechVoiceProviderCandidateQuality() {
+        XCTAssertEqual(AVFoundationSpeechVoiceProvider.candidateQuality(for: .enhanced), .enhanced)
+        XCTAssertEqual(AVFoundationSpeechVoiceProvider.candidateQuality(for: .premium), .premium)
+        XCTAssertEqual(AVFoundationSpeechVoiceProvider.candidateQuality(for: .default), .default)
+    }
+
+    func testAVFoundationSpeechVoiceProviderPrewarmPopulatesCache() async {
+        AVFoundationSpeechVoiceProvider.invalidateCache()
+        let expectation = XCTestExpectation(description: "prewarm completion")
+        AVFoundationSpeechVoiceProvider.prewarm(force: true) {
+            expectation.fulfill()
+        }
+        await fulfillment(of: [expectation], timeout: 5.0)
+        XCTAssertNotNil(AVFoundationSpeechVoiceProvider.cachedCandidates)
     }
 
     func testLegacyKokoroMigrationIsIdempotent() throws {

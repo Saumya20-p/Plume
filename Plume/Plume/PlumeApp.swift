@@ -28,6 +28,11 @@ struct PlumeApp: App {
         }
     }()
 
+    init() {
+        // Pre-warm speech synthesis voices asynchronously off the Main Thread at launch
+        AVFoundationSpeechVoiceProvider.prewarm()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
