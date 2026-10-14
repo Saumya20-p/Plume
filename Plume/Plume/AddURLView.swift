@@ -61,6 +61,8 @@ struct AddURLView: View {
         catch { errorMessage = error.localizedDescription; return }
         isExtracting = true
         errorMessage = nil
+        fallbackTitle = ""
+        fallbackBody = ""
         importTask = Task { @MainActor in
             defer { isExtracting = false }
             do {

@@ -289,6 +289,10 @@ struct LibraryView: View {
             guard let data = try? Data(contentsOf: fileURL),
                   let item = try? JSONDecoder().decode(SharedItem.self, from: data) else {
                 try? FileManager.default.removeItem(at: fileURL)
+                failedSharedFile = nil
+                failedSharedURL = nil
+                failedSharedTitle = ""
+                failedSharedBody = ""
                 sharedImportError = "The shared item couldn't be read. Share it again or paste its text."
                 showingSharedImportError = true
                 continue

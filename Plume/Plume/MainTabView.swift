@@ -26,6 +26,7 @@ struct MainTabView: View {
     @State private var fileImportTask: Task<Void, Never>?
     @State private var isImportingFile = false
     @State private var pendingManualFallback = false
+    @State private var failedDestination = ImportDestination()
 
     var body: some View {
         LibraryView(onAdd: { folder in
@@ -38,6 +39,7 @@ struct MainTabView: View {
             failedBody = body
             showingManualPaste = true
         })
+        .disabled(isImportingFile)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !playbackEngine.isPlayerViewPresented, let doc = playbackEngine.currentDocument {
                 MiniPlayerView(document: doc)
@@ -143,8 +145,8 @@ struct MainTabView: View {
             }
         }
         .alert("Import Failed", isPresented: $showingImportError) {
-            Button("Choose File Again") { showingFileImporter = true }
-            Button("Paste Text Manually") { failedURL = nil; failedBody = ""; showingManualPaste = true }
+            Button("Choose File Again") { importDestination = failedDestination; showingFileImporter = true }
+            Button("Paste Text Manually") { importDestination = failedDestination; failedURL = nil; failedBody = ""; showingManualPaste = true }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text(importErrorMessage)
@@ -152,6 +154,7 @@ struct MainTabView: View {
     }
     
     private func handleFileImport(result: Result<[URL], Error>) {
+        failedDestination = importDestination
         switch result {
         case .failure(let error):
             if (error as NSError).code == NSUserCancelledError { return }
@@ -210,6 +213,7 @@ struct MainTabView: View {
                     } catch is CancellationError {
                     } catch {
                         guard !Task.isCancelled else { return }
+                        failedDestination = destination
                         importErrorMessage = error.localizedDescription
                         showingImportError = true
                     }

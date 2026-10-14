@@ -9,8 +9,17 @@ nonisolated func fetchImportArtwork(_ url: URL?) async -> Data? {
     config.waitsForConnectivity = false
     let session = URLSession(configuration: config)
     defer { session.invalidateAndCancel() }
-    guard let (data, response) = try? await session.data(from: url), !Task.isCancelled,
-          data.count <= 5_000_000, let response = response as? HTTPURLResponse,
-          (200..<300).contains(response.statusCode), response.mimeType?.hasPrefix("image/") == true else { return nil }
-    return data
+    do {
+        let (bytes, response) = try await session.bytes(from: url)
+        guard let response = response as? HTTPURLResponse,
+              (200..<300).contains(response.statusCode),
+              response.mimeType?.hasPrefix("image/") == true,
+              response.expectedContentLength <= 5_000_000 else { return nil }
+        var data = Data()
+        for try await byte in bytes {
+            guard !Task.isCancelled, data.count < 5_000_000 else { return nil }
+            data.append(byte)
+        }
+        return data.isEmpty ? nil : data
+    } catch { return nil }
 }
