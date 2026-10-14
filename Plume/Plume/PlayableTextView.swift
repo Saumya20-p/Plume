@@ -1,8 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// Keeps the reading surface and dock in one UIKit hierarchy, so the public
-/// scroll-edge interaction can derive its shape from the real SwiftUI controls.
+/// Keeps the reading surface, progressive material veil, and dock in one hierarchy.
 struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
     let text: String
     let currentWord: WordTimestamp?
@@ -14,6 +13,9 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
     let lineSpacing: Double
     let textColor: UIColor
     let backgroundColor: UIColor
+    let headerClearance: CGFloat
+    let dockHeight: CGFloat
+    let reduceTransparency: Bool
     let isWarmTheme: Bool
     let canAutoResume: Bool
     let reduceMotion: Bool
@@ -42,7 +44,12 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         let coordinator = context.coordinator
         coordinator.parent = self
         controller.controlsHost.rootView = controls
-        controller.view.backgroundColor = backgroundColor
+        controller.configureReader(
+            headerClearance: headerClearance,
+            dockHeight: dockHeight,
+            backgroundColor: backgroundColor,
+            reduceTransparency: reduceTransparency
+        )
         let textView = controller.textView
         let font = makeFont()
         let rebuilt = coordinator.lastText != text || coordinator.lastFont != font ||
@@ -269,6 +276,11 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
     let textView = UITextView()
     let controlsHost: UIHostingController<Controls>
     var onReaderLayout: (() -> Void)?
+    private let veil = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+    private let veilMask = ReaderGradientView()
+    private let themeFade = ReaderGradientView()
+    private var headerClearance: CGFloat = 0
+    private var reportedDockHeight: CGFloat = 0
 
     init(controls: Controls) {
         controlsHost = UIHostingController(rootView: controls)
@@ -287,6 +299,14 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         textView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(textView)
 
+        // The effect itself is masked; its ancestors remain unmasked and opaque.
+        veil.alpha = 1
+        veil.isUserInteractionEnabled = false
+        veilMask.gradient.colors = [UIColor.clear.cgColor, UIColor.black.withAlphaComponent(0.9).cgColor]
+        view.addSubview(veil)
+        themeFade.isUserInteractionEnabled = false
+        view.addSubview(themeFade)
+
         addChild(controlsHost)
         controlsHost.sizingOptions = .intrinsicContentSize
         controlsHost.view.backgroundColor = .clear
@@ -302,18 +322,17 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
             controlsHost.view.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
             controlsHost.view.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
         ])
-        if #available(iOS 26.0, *) {
-            #if DEBUG
-            // Screenshot comparison only; production always uses the soft edge.
-            textView.bottomEdgeEffect.style = ProcessInfo.processInfo.arguments.contains("--reader-edge-automatic") ? .automatic : .soft
-            #else
-            textView.bottomEdgeEffect.style = .soft
-            #endif
-            let interaction = UIScrollEdgeElementContainerInteraction()
-            interaction.scrollView = textView
-            interaction.edge = .bottom
-            controlsHost.view.addInteraction(interaction)
-        }
+        textView.bottomEdgeEffect.isHidden = true
+    }
+
+    func configureReader(headerClearance: CGFloat, dockHeight: CGFloat, backgroundColor: UIColor, reduceTransparency: Bool) {
+        self.headerClearance = max(0, headerClearance)
+        reportedDockHeight = max(0, dockHeight)
+        view.backgroundColor = backgroundColor
+        themeFade.gradient.colors = [backgroundColor.withAlphaComponent(0).cgColor, backgroundColor.withAlphaComponent(0.25).cgColor]
+        veil.isHidden = reduceTransparency
+        themeFade.isHidden = reduceTransparency
+        view.setNeedsLayout()
     }
 
     override func viewDidLayoutSubviews() {
@@ -321,8 +340,35 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         // Content still draws beneath the dock, with sufficient measured space
         // for the final line to scroll entirely above the controls.
         let dockHeight = max(0, view.bounds.maxY - controlsHost.view.frame.minY)
-        let inset = UIEdgeInsets(top: view.safeAreaInsets.top + 16, left: 16, bottom: dockHeight + 24, right: 16)
+        let inset = UIEdgeInsets(top: max(headerClearance, view.safeAreaInsets.top) + 16, left: 16, bottom: dockHeight + 24, right: 16)
         if textView.textContainerInset != inset { textView.textContainerInset = inset }
+        let effectiveDockHeight = reportedDockHeight > 0 ? reportedDockHeight : controlsHost.view.bounds.height
+        let start = min(view.bounds.maxY, max(headerClearance + 16, controlsHost.view.frame.maxY - effectiveDockHeight - 72))
+        let veilFrame = CGRect(x: view.bounds.minX, y: start, width: view.bounds.width, height: max(0, view.bounds.maxY - start))
+        if veil.frame != veilFrame || veil.mask == nil {
+            veil.frame = veilFrame
+            themeFade.frame = veilFrame
+            veilMask.frame = veil.bounds
+            veilMask.layoutIfNeeded()
+            // UIKit copies effect masks. Reassign after resizing the original.
+            veil.mask = nil
+            veil.mask = veilMask
+        }
         onReaderLayout?()
     }
+}
+
+@MainActor private final class ReaderGradientView: UIView {
+    override class var layerClass: AnyClass { CAGradientLayer.self }
+    var gradient: CAGradientLayer { layer as! CAGradientLayer }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        gradient.startPoint = CGPoint(x: 0.5, y: 0)
+        gradient.endPoint = CGPoint(x: 0.5, y: 1)
+        gradient.locations = [0, 1]
+        isUserInteractionEnabled = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
