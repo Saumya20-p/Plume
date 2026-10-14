@@ -3,6 +3,99 @@ import Testing
 @testable import Plume
 
 struct ReaderContractsTests {
+    @Test("Current word preserves full tokens and attached punctuation", arguments: [
+        ("I", "I"),
+        ("  extraordinary\n", "extraordinary"),
+        ("pneumonoultramicroscopicsilicovolcanoconiosis", "pneumonoultramicroscopicsilicovolcanoconiosis"),
+        ("“Hello,”", "“Hello,”"),
+        ("can't", "can't"),
+        ("mother-in-law", "mother-in-law"),
+        ("cafe\u{301}", "cafe\u{301}"),
+        ("你好。", "你好。"),
+        ("مرحبا،", "مرحبا،"),
+        ("１２３", "１２３"),
+        ("Ⅷ", "Ⅷ"),
+        (" 42! ", "42!")
+    ])
+    func testValidCurrentWordDisplay(word: String, expected: String) {
+        var display = ReaderWordDisplay()
+        display.update(word: word, documentID: UUID(), isPaused: false)
+        #expect(display.currentWordValue == expected)
+        #expect(display.displayText == expected)
+    }
+
+    @Test("Unavailable and non-word values use the descriptive fallback", arguments: [
+        nil, "", " \n\t", ".", "…", "—", "?!", "👋", "\u{301}",
+        "two words", "two\twords", "two\nwords", "two\u{00A0}words", "two\u{2003}words"
+    ] as [String?])
+    func testInvalidCurrentWordDisplay(word: String?) {
+        var display = ReaderWordDisplay()
+        display.update(word: word, documentID: UUID(), isPaused: false)
+        #expect(display.currentWordValue == nil)
+        #expect(display.displayText == "Return to Current Word")
+    }
+
+    @Test("Playing never substitutes a cached word for invalid input", arguments: [
+        nil, "", "…", "two words"
+    ] as [String?])
+    func testInvalidPlayingWordDoesNotReuseCache(word: String?) {
+        let documentID = UUID()
+        var display = ReaderWordDisplay()
+        display.update(word: "previous", documentID: documentID, isPaused: false)
+        display.update(word: word, documentID: documentID, isPaused: false)
+        #expect(display.currentWordValue == nil)
+        #expect(display.displayText == "Return to Current Word")
+
+        display.update(word: word, documentID: documentID, isPaused: true)
+        #expect(display.currentWordValue == "previous")
+        #expect(display.displayText == "previous")
+    }
+
+    @Test
+    func testPauseRetainsLatestWordAndResumeUsesCurrentInput() {
+        let documentID = UUID()
+        var display = ReaderWordDisplay()
+        display.update(word: "first", documentID: documentID, isPaused: false)
+        display.update(word: nil, documentID: documentID, isPaused: true)
+        #expect(display.displayText == "first")
+
+        display.update(word: " second! ", documentID: documentID, isPaused: true)
+        display.update(word: "", documentID: documentID, isPaused: true)
+        #expect(display.currentWordValue == "second!")
+        #expect(display.displayText == "second!")
+
+        display.update(word: nil, documentID: documentID, isPaused: false)
+        #expect(display.displayText == "Return to Current Word")
+        display.update(word: "third", documentID: documentID, isPaused: false)
+        #expect(display.displayText == "third")
+    }
+
+    @Test("Changing chapters clears word history even while paused", arguments: [false, true])
+    func testDocumentChangeResetsCurrentWordCache(isPaused: Bool) {
+        let firstDocument = UUID()
+        let secondDocument = UUID()
+        var display = ReaderWordDisplay()
+        display.update(word: "first", documentID: firstDocument, isPaused: false)
+        display.update(word: nil, documentID: secondDocument, isPaused: isPaused)
+        #expect(display.currentWordValue == nil)
+        #expect(display.displayText == "Return to Current Word")
+
+        display.update(word: nil, documentID: firstDocument, isPaused: true)
+        #expect(display.displayText == "Return to Current Word")
+        display.update(word: "new", documentID: secondDocument, isPaused: true)
+        display.update(word: nil, documentID: secondDocument, isPaused: true)
+        #expect(display.displayText == "new")
+    }
+
+    @Test
+    func testPausedWithoutAnyValidWordUsesFallback() {
+        var display = ReaderWordDisplay()
+        #expect(display.currentWordValue == nil)
+        #expect(display.displayText == "Return to Current Word")
+        display.update(word: nil, documentID: UUID(), isPaused: true)
+        #expect(display.displayText == "Return to Current Word")
+    }
+
     @Test
     func testNewAndLegacyPreferencesKeepGeorgiaAndPersistMigration() throws {
         let suite = "ReaderContractsTests.\(UUID().uuidString)"
