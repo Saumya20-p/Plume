@@ -6,6 +6,8 @@ import PDFKit
 struct MainTabView: View {
     @ObservedObject private var playbackEngine = AudioPlaybackEngine.shared
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject private var appearanceManager = AppearanceManager.shared
     
     @State private var showAddSheet = false
     @State private var importDestination = ImportDestination()
@@ -52,7 +54,7 @@ struct MainTabView: View {
                 PlayerView(document: doc)
                     .equatable()
             }
-            .background(Color(uiColor: .systemBackground).ignoresSafeArea())
+            .background(appearanceManager.activeTheme(colorScheme: colorScheme).backgroundColor.ignoresSafeArea())
             #if DEBUG
             .modifier(UIExperimentEnvironment())
             #endif

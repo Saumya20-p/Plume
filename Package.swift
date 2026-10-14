@@ -29,6 +29,7 @@ let package = Package(
                 "StatisticsRange.swift",
                 "ReaderFont.swift",
                 "ReaderFollowContract.swift",
+                "ReaderWordDisplay.swift",
                 "ImportContracts.swift",
                 "LibrarySearchContracts.swift"
             ]

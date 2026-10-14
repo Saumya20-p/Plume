@@ -1,3 +1,2 @@
-// The reader now uses UITextView.bottomEdgeEffect and
-// UIScrollEdgeElementContainerInteraction (public iOS 26 APIs).
+// The reader uses one public, directly masked UIVisualEffectView.
 // This placeholder retains the existing Xcode source-file reference.

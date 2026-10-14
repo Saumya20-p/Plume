@@ -20,74 +20,131 @@ struct PlayerView: View, Equatable {
     @State private var interactionRequest = 0
     @State private var controlsSheetPresented = false
     @State private var readerVisible = false
+    @State private var dockHeight: CGFloat = 0
+    @State private var wordDisplay = ReaderWordDisplay()
+    @ScaledMetric(relativeTo: .subheadline) private var returnLineHeight: CGFloat = 20
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.legibilityWeight) private var legibilityWeight
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var systemReduceTransparency
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var appearanceManager = AppearanceManager.shared
     
+    private var reduceMotion: Bool {
+        #if DEBUG
+        if UIExperimentFixture.enabled && ProcessInfo.processInfo.arguments.contains("--ui-experiment-reduce-motion") { return true }
+        #endif
+        return systemReduceMotion
+    }
+
+    private var reduceTransparency: Bool {
+        #if DEBUG
+        if UIExperimentFixture.enabled && ProcessInfo.processInfo.arguments.contains("--ui-experiment-reduce-transparency") { return true }
+        #endif
+        return systemReduceTransparency
+    }
+
     var body: some View {
         let activeTheme = appearanceManager.activeTheme(colorScheme: colorScheme)
         
-        PlayableTextView(
-            text: document.bodyText,
-            currentWord: progress.currentWord,
-            readerFont: appearanceManager.readerFont,
-            fontSize: appearanceManager.fontSize,
-            isBold: appearanceManager.isBold,
-            systemBold: legibilityWeight == .bold,
-            contentSizeCategory: dynamicTypeSize.uiContentSizeCategory,
-            lineSpacing: appearanceManager.lineSpacing,
-            textColor: UIColor(activeTheme.textColor),
-            backgroundColor: UIColor(activeTheme.backgroundColor),
-            isWarmTheme: activeTheme == .warm,
-            canAutoResume: readerVisible && playbackEngine.isPlaying && scenePhase == .active &&
-                !showQueueSheet && !showAppearanceSettings && !controlsSheetPresented && !voiceOverEnabled,
-            reduceMotion: reduceMotion,
-            returnRequest: returnRequest,
-            interactionRequest: interactionRequest,
-            onBrowsingChanged: { isBrowsing = $0 },
-            onWordTapped: { _, charIndex in
-                playbackEngine.seek(toCharIndex: charIndex)
-                if !playbackEngine.isPlaying { playbackEngine.play() }
-            },
-            controls: VStack(spacing: 8) {
-                if isBrowsing {
-                    Button("Return to Current Word", systemImage: "text.line.first.and.arrowtriangle.forward") {
-                        isBrowsing = false
-                        returnRequest += 1
+        GeometryReader { geometry in
+            PlayableTextView(
+                text: document.bodyText,
+                currentWord: progress.currentWord,
+                readerFont: appearanceManager.readerFont,
+                fontSize: appearanceManager.fontSize,
+                isBold: appearanceManager.isBold,
+                systemBold: legibilityWeight == .bold,
+                contentSizeCategory: dynamicTypeSize.uiContentSizeCategory,
+                lineSpacing: appearanceManager.lineSpacing,
+                textColor: UIColor(activeTheme.textColor),
+                backgroundColor: UIColor(activeTheme.backgroundColor),
+                headerClearance: geometry.safeAreaInsets.top,
+                dockHeight: dockHeight,
+                reduceTransparency: reduceTransparency,
+                isWarmTheme: activeTheme == .warm,
+                canAutoResume: readerVisible && playbackEngine.isPlaying && scenePhase == .active &&
+                    !showQueueSheet && !showAppearanceSettings && !controlsSheetPresented && !voiceOverEnabled,
+                reduceMotion: reduceMotion,
+                returnRequest: returnRequest,
+                interactionRequest: interactionRequest,
+                onBrowsingChanged: { isBrowsing = $0 },
+                onWordTapped: { _, charIndex in
+                    playbackEngine.seek(toCharIndex: charIndex)
+                    if !playbackEngine.isPlaying { playbackEngine.play() }
+                },
+                controls: VStack(spacing: 8) {
+                    if isBrowsing {
+                        Button {
+                            isBrowsing = false
+                            returnRequest += 1
+                        } label: {
+                            ZStack {
+                                Text(wordDisplay.displayText)
+                                    .font(.subheadline.weight(.semibold))
+                                    .lineLimit(2)
+                                    .minimumScaleFactor(0.6)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 44)
+                                    .frame(maxWidth: .infinity)
+                                Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                                    .font(.system(size: 17))
+                                    .foregroundStyle(DesignSystem.accent)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.leading, 16)
+                            }
+                            .frame(height: max(48, returnLineHeight * 2 + 8))
+                            .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(activeTheme.textColor)
+                        .background(activeTheme.backgroundColor.opacity(reduceTransparency ? 1 : 0.8), in: Capsule())
+                        .overlay { Capsule().strokeBorder(DesignSystem.accent.opacity(0.4), lineWidth: 1) }
+                        .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
+                        .accessibilityLabel("Return to Current Word")
+                        .accessibilityValue(wordDisplay.currentWordValue ?? "")
+                        .accessibilityHint("Moves the reader to the spoken word")
+                        .transaction { $0.animation = nil }
                     }
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.horizontal, 16)
-                    .frame(minHeight: 44)
-                    .background(.regularMaterial, in: Capsule())
-                    .accessibilityHint("Moves the reader to the spoken word")
+                    PlayerControlsView(
+                        document: document,
+                        playbackEngine: playbackEngine,
+                        generationManager: generationManager,
+                        showQueueSheet: $showQueueSheet,
+                        reduceTransparency: reduceTransparency,
+                        onSheetPresentationChanged: { controlsSheetPresented = $0 },
+                        onInteraction: { interactionRequest += 1 },
+                        onDismiss: {
+                            isExplicitlyDismissing = true
+                            playbackEngine.presentedPlayerDocument = nil
+                            dismiss()
+                        }
+                    )
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { dockHeight = $0 }
                 }
-                PlayerControlsView(
-                    document: document,
-                    playbackEngine: playbackEngine,
-                    generationManager: generationManager,
-                    showQueueSheet: $showQueueSheet,
-                    onSheetPresentationChanged: { controlsSheetPresented = $0 },
-                    onInteraction: { interactionRequest += 1 },
-                    onDismiss: {
-                        isExplicitlyDismissing = true
-                        playbackEngine.presentedPlayerDocument = nil
-                        dismiss()
-                    }
-                )
-            }
-            .environment(\.colorScheme, colorScheme)
-            .environment(\.dynamicTypeSize, dynamicTypeSize)
-            .environment(\.legibilityWeight, legibilityWeight)
-        )
-        .ignoresSafeArea(edges: .bottom)
+                .environment(\.colorScheme, .dark)
+                .environment(\.dynamicTypeSize, dynamicTypeSize)
+                .environment(\.legibilityWeight, legibilityWeight)
+            )
+            .ignoresSafeArea(edges: [.top, .bottom])
+        }
+        .background(activeTheme.backgroundColor.ignoresSafeArea())
         .navigationTitle(document.title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(reduceTransparency ? .visible : .hidden, for: .navigationBar)
+        .toolbarBackground(activeTheme.backgroundColor, for: .navigationBar)
+        .toolbarColorScheme(activeTheme == .warm ? .light : .dark, for: .navigationBar)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text(document.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .foregroundStyle(activeTheme.textColor)
+                    .accessibilityAddTraits(.isHeader)
+            }
             ToolbarItem(placement: .navigationBarLeading) {
                 Button {
                     isExplicitlyDismissing = true
@@ -96,6 +153,7 @@ struct PlayerView: View, Equatable {
                 } label: {
                     Image(systemName: "chevron.down")
                         .fontWeight(.semibold)
+                        .foregroundStyle(activeTheme.textColor)
                 }
                 .accessibilityLabel("Minimize Player")
             }
@@ -104,6 +162,7 @@ struct PlayerView: View, Equatable {
                     showAppearanceSettings = true
                 } label: {
                     Image(systemName: "textformat.size")
+                        .foregroundStyle(activeTheme.textColor)
                 }
                 .accessibilityLabel("Reading Appearance")
             }
@@ -118,6 +177,9 @@ struct PlayerView: View, Equatable {
                 .modifier(UIExperimentEnvironment())
                 #endif
         }
+        .onChange(of: progress.currentWord, initial: true) { _, _ in updateReturnWord() }
+        .onChange(of: playbackEngine.isPlaying) { _, _ in updateReturnWord() }
+        .onChange(of: document.id) { _, _ in updateReturnWord() }
         .onAppear {
             readerVisible = true
             playbackEngine.isPlayerViewPresented = true
@@ -168,6 +230,12 @@ struct PlayerView: View, Equatable {
             }
         )
     }
+
+    private func updateReturnWord() {
+        let word = playbackEngine.currentDocument?.id == document.id ? progress.currentWord?.word : nil
+        wordDisplay.update(word: word, documentID: document.id, isPaused: !playbackEngine.isPlaying)
+    }
+
 }
 
 struct PlayerControlsView: View {
@@ -176,6 +244,7 @@ struct PlayerControlsView: View {
     @ObservedObject var progress = PlaybackProgress.shared
     @ObservedObject var generationManager: AudioGenerationManager
     @Binding var showQueueSheet: Bool
+    var reduceTransparency: Bool
     var onSheetPresentationChanged: (Bool) -> Void
     var onInteraction: () -> Void
     var onDismiss: () -> Void
@@ -197,12 +266,8 @@ struct PlayerControlsView: View {
     var body: some View {
         VStack(spacing: 4) {
             if verticalSizeClass == .compact {
-                HStack(spacing: 16) {
-                    playbackTime
-                    timeline
-                }
+                playbackTime.frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                timeline
                 HStack {
                     queueButton
                     Spacer()
@@ -349,12 +414,13 @@ struct PlayerControlsView: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 16) 
-        .padding(.top, 4)
+        .padding(.top, 44)
         .contentShape(Rectangle()) // Capture all taps so they don't fall through to text!
         .background(
-            .regularMaterial,
+            Color(uiColor: .secondarySystemBackground).opacity(reduceTransparency ? 1 : 0.55),
             in: RoundedRectangle(cornerRadius: 24, style: .continuous)
         )
+        .overlay(alignment: .top) { timeline }
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 5)
 
@@ -418,7 +484,7 @@ struct PlayerControlsView: View {
             playbackEngine.stopAndRelease()
             onDismiss()
         } label: {
-            Image(systemName: "stop.fill")
+            Image(systemName: "xmark")
                 .font(.system(size: 17))
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)
@@ -464,22 +530,25 @@ struct LiveEdgeScrubber: View {
             let displayTime = dragTime ?? currentTime
             let progressRatio = CGFloat(max(0, min(1, displayTime / validTotal)))
             let bufferRatio = isFullyGenerated ? 1 : CGFloat(max(0, min(1, generatedDuration / validTotal)))
-            ZStack(alignment: .leading) {
+            ZStack(alignment: .topLeading) {
                 Capsule()
-                    .fill(Color.secondary.opacity(0.3))
+                    .fill(Color.secondary.opacity(0.18))
                     .frame(height: 3)
                 Capsule()
-                    .fill(Color.secondary.opacity(0.6))
+                    .fill(Color.secondary.opacity(0.35))
                     .frame(width: geometry.size.width * bufferRatio, height: 3)
                 Capsule()
                     .fill(DesignSystem.accent)
                     .frame(width: geometry.size.width * progressRatio, height: 3)
-                Circle()
-                    .fill(DesignSystem.accent)
-                    .frame(width: 10, height: 10)
-                    .offset(x: max(0, min(geometry.size.width - 10, geometry.size.width * progressRatio - 5)))
+                if dragTime != nil {
+                    Circle()
+                        .fill(DesignSystem.accent)
+                        .frame(width: 10, height: 10)
+                        .offset(x: max(8, min(geometry.size.width - 18, geometry.size.width * progressRatio - 5)), y: 5)
+                }
             }
-            .frame(height: 44)
+            .padding(.top, 1)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)

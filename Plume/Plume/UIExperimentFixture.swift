@@ -41,6 +41,10 @@ enum UIExperimentFixture {
             engine.load(document: document)
             engine.pause()
             PlaybackProgress.shared.currentWord = WordTimestamp(word: "The", startTime: 0, endTime: 1, rangeLocation: 13, rangeLength: 3)
+            if arguments.contains("--ui-experiment-position") {
+                engine.currentTime = 60
+                engine.duration = 120
+            }
             engine.presentedPlayerDocument = document
         }
     }

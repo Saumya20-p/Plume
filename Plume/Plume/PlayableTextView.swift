@@ -44,6 +44,9 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         let coordinator = context.coordinator
         coordinator.parent = self
         controller.controlsHost.rootView = controls
+        // Keep UIKit hit bounds in sync when the Return row appears or disappears.
+        controller.controlsHost.view.invalidateIntrinsicContentSize()
+        controller.overrideUserInterfaceStyle = isWarmTheme ? .light : .dark
         controller.configureReader(
             headerClearance: headerClearance,
             dockHeight: dockHeight,
@@ -303,7 +306,7 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         // The effect itself is masked; its ancestors remain unmasked and opaque.
         veil.alpha = 1
         veil.isUserInteractionEnabled = false
-        let dockMaskColor = UIColor.black.withAlphaComponent(0.9).cgColor
+        let dockMaskColor = UIColor.black.withAlphaComponent(0.97).cgColor
         veilMask.gradient.colors = [UIColor.clear.cgColor, dockMaskColor, dockMaskColor]
         view.addSubview(veil)
         themeFade.isUserInteractionEnabled = false
