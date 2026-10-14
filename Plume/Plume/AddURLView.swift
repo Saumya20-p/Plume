@@ -1,108 +1,94 @@
 import SwiftUI
 import SwiftData
-import os
 
 struct AddURLView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    
-    @State private var pastedURL: String = ""
+    @State private var pastedURL = ""
     @State private var isExtracting = false
-    
+    @State private var errorMessage: String?
+    @State private var importTask: Task<Void, Never>?
+    @State private var fallbackTitle = ""
+    @State private var fallbackBody = ""
+    var destination = ImportDestination()
     var onFailedExtraction: (URL, String, String) -> Void
-    
+
     var body: some View {
         NavigationStack {
             Form {
-                Section(header: Text("URL"), footer: Text("Paste a link to a web novel chapter. Plume will automatically extract the content.")) {
+                Section {
                     TextField("https://example.com/chapter-1", text: $pastedURL)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled(true)
+                        .autocorrectionDisabled()
+                        .disabled(isExtracting)
+                } header: { Text("URL") } footer: {
+                    Text("Extract readable text from a web page. Saves to \(destination.name).")
                 }
-                
-                if isExtracting {
+                if isExtracting { Section { ProgressView("Extracting text…") } }
+                if let errorMessage {
                     Section {
-                        HStack {
-                            Spacer()
-                            ProgressView("Extracting...")
-                            Spacer()
+                        Text(errorMessage).foregroundStyle(.secondary)
+                        Button("Retry", action: importURL)
+                        Button("Paste Text Manually") {
+                            guard let url = try? validatedImportURL(pastedURL) else { return }
+                            onFailedExtraction(url, fallbackTitle, fallbackBody)
+                            dismiss()
                         }
-                    }
+                    } header: { Text("Import Failed") }
                 }
             }
             .navigationTitle("Import from URL")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                    .disabled(isExtracting)
+                    Button("Cancel") { importTask?.cancel(); dismiss() }
                 }
-                
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Import") {
-                        importURL()
-                    }
-                    .disabled(pastedURL.isEmpty || isExtracting)
+                    Button("Import", action: importURL)
+                        .disabled(pastedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExtracting)
                 }
             }
         }
-        .interactiveDismissDisabled(isExtracting)
+        .onDisappear { importTask?.cancel() }
     }
-    
+
     private func importURL() {
         guard !isExtracting else { return }
-        guard let url = URL(string: pastedURL) else { return }
+        let url: URL
+        do { url = try validatedImportURL(pastedURL) }
+        catch { errorMessage = error.localizedDescription; return }
         isExtracting = true
-        
-        Task {
+        errorMessage = nil
+        importTask = Task { @MainActor in
+            defer { isExtracting = false }
             do {
                 let html = try await WebViewFetcher.shared.fetchHTML(from: url)
+                try Task.checkCancellation()
                 let result = ContentExtractor.extract(html: html, sourceURL: url)
-                
-                var coverImageData: Data? = nil
-                if let imageURL = result.coverImageURL {
-                    var request = URLRequest(url: imageURL)
-                    request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-                    request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8", forHTTPHeaderField: "Accept")
-                    
-                    let config = URLSessionConfiguration.default
-                    config.waitsForConnectivity = true
-                    config.allowsExpensiveNetworkAccess = false
-                    let session = URLSession(configuration: config)
-                    
-                    if let (data, response) = try? await session.data(for: request),
-                       let httpResponse = response as? HTTPURLResponse,
-                       httpResponse.statusCode == 200 {
-                        coverImageData = data
-                    }
+                fallbackTitle = result.title
+                fallbackBody = result.body
+                guard !result.failed, !result.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw ImportFailure.extractionFailed
                 }
-                
-                await MainActor.run {
-                    if result.failed {
-                        // Pass back to parent to show ManualPasteView
-                        onFailedExtraction(url, result.title, result.body)
-                        dismiss()
-                    } else {
-                        let wordCount = result.body.components(separatedBy: .whitespacesAndNewlines).filter({!$0.isEmpty}).count
-                        let doc = Document(
-                            title: result.title,
-                            sourceURL: url,
-                            bodyText: result.body,
-                            extractionFailed: false,
-                            wordCount: wordCount
-                        )
-                        doc.coverImageData = coverImageData
-                        modelContext.insert(doc)
-                        PlaybackQueueManager.shared.enqueue(doc.id)
-                        dismiss()
-                    }
+                let folder = try destination.folder(in: modelContext)
+                try Task.checkCancellation()
+                let doc = Document(title: result.title, sourceURL: url, bodyText: result.body,
+                                   wordCount: result.body.split(whereSeparator: \.isWhitespace).count)
+                doc.folder = folder
+                modelContext.insert(doc)
+                do { try modelContext.save() } catch { modelContext.delete(doc); throw error }
+                PlaybackQueueManager.shared.enqueue(doc.id)
+                let imageURL = result.coverImageURL
+                Task { @MainActor in
+                    guard let data = await fetchImportArtwork(imageURL), doc.deletedAt == nil else { return }
+                    doc.coverImageData = data
                 }
+                dismiss()
+            } catch is CancellationError {
             } catch {
-                Log.network.error("Failed to fetch HTML: \(error.localizedDescription, privacy: .public)")
-                await MainActor.run { isExtracting = false }
+                guard !Task.isCancelled else { return }
+                errorMessage = error.localizedDescription
             }
         }
     }

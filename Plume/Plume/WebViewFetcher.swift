@@ -1,95 +1,82 @@
 import Foundation
 import WebKit
 
-@MainActor
-public class WebViewFetcher: NSObject {
+@MainActor public class WebViewFetcher: NSObject {
     public static let shared = WebViewFetcher()
-    
-    // We retain active fetchers here so they aren't deallocated while fetching
     private var activeFetchers: Set<SingleWebViewFetch> = []
-    
-    private override init() {
-        super.init()
-    }
-    
+    private override init() { super.init() }
+
     public func fetchHTML(from url: URL) async throws -> String {
         let fetcher = SingleWebViewFetch()
         activeFetchers.insert(fetcher)
-        
-        defer {
-            activeFetchers.remove(fetcher)
-        }
-        
+        defer { activeFetchers.remove(fetcher) }
         return try await fetcher.fetch(url: url)
     }
 }
 
-@MainActor
-class SingleWebViewFetch: NSObject, WKNavigationDelegate {
+@MainActor final class SingleWebViewFetch: NSObject, WKNavigationDelegate {
     private var webView: WKWebView!
-    private var continuation: CheckedContinuation<String, Error>?
+    private var gate: ImportCompletionGate<String>?
+    private var timeoutTask: Task<Void, Never>?
+    private var renderTask: Task<Void, Never>?
     private var targetURL: URL?
-    
+
     override init() {
         super.init()
-        let config = WKWebViewConfiguration()
-        webView = WKWebView(frame: .zero, configuration: config)
+        webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         webView.navigationDelegate = self
-        // Optional: set a custom user agent so we look like a mobile browser
         webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
     }
-    
+
     func fetch(url: URL) async throws -> String {
         targetURL = url
-        return try await withCheckedThrowingContinuation { continuation in
-            self.continuation = continuation
-            webView.load(URLRequest(url: url))
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                gate = ImportCompletionGate(continuation)
+                timeoutTask = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                    self?.finish(.failure(URLError(.timedOut)))
+                }
+                webView.load(URLRequest(url: url))
+            }
+        } onCancel: {
+            Task { @MainActor in self.finish(.failure(CancellationError())) }
         }
     }
-    
+
+    private func finish(_ result: Result<String, Error>) {
+        guard let gate else { return }
+        self.gate = nil
+        timeoutTask?.cancel()
+        renderTask?.cancel()
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        gate.finish(result)
+    }
+
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // Debounce / Ensure we only resume continuation once
-        guard continuation != nil else { return }
-        
-        // Wait a short moment for JS frameworks to finish rendering their DOM
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self = self else { return }
-            guard let cont = self.continuation else { return }
-            
-            // Sanity check: Ensure the webview didn't navigate completely away from our target URL
-            let currentURL = self.webView.url?.absoluteString ?? ""
-            _ = self.targetURL?.absoluteString ?? ""
-            
-            // We do a soft match on the host and path to allow for http/https redirects or trailing slashes
-            if let targetHost = self.targetURL?.host, !currentURL.contains(targetHost) {
-                // If it navigated to a completely different domain, it's either an ad redirect or a failure.
-                // We will just let it scrape whatever is there or fail, but it's safer to fail loudly.
-                cont.resume(throwing: URLError(.badURL))
-                self.continuation = nil
+        guard gate != nil else { return }
+        renderTask?.cancel()
+        renderTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(1500)) } catch { return }
+            guard let self, self.gate != nil else { return }
+            guard self.webView.url?.host?.lowercased() == self.targetURL?.host?.lowercased() else {
+                self.finish(.failure(URLError(.badURL)))
                 return
             }
-            
-            self.webView.evaluateJavaScript("document.documentElement.outerHTML") { (result, error) in
-                if let html = result as? String {
-                    cont.resume(returning: html)
-                } else {
-                    let err = error ?? URLError(.cannotParseResponse)
-                    cont.resume(throwing: err)
-                }
-                self.continuation = nil
+            self.webView.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] result, error in
+                guard let self else { return }
+                if let html = result as? String { self.finish(.success(html)) }
+                else { self.finish(.failure(error ?? URLError(.cannotParseResponse))) }
             }
         }
     }
-    
+
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        guard let cont = continuation else { return }
-        cont.resume(throwing: error)
-        self.continuation = nil
+        finish(.failure(error))
     }
-    
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        guard let cont = continuation else { return }
-        cont.resume(throwing: error)
-        self.continuation = nil
+        finish(.failure(error))
     }
 }
