@@ -5,6 +5,9 @@ struct RecentlyDeletedView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(filter: #Predicate<Document> { $0.deletedAt != nil }, sort: \Document.deletedAt, order: .reverse) private var deletedDocuments: [Document]
     
+    @State private var pendingDeletion: Document?
+    @State private var deletionError: String?
+
     var body: some View {
         List {
             ForEach(deletedDocuments) { doc in
@@ -13,7 +16,7 @@ struct RecentlyDeletedView: View {
                         .font(.body.weight(.semibold))
                     
                     if let deletedAt = doc.deletedAt {
-                        let daysRemaining = max(0, 30 - Calendar.current.dateComponents([.day], from: deletedAt, to: Date()).day!)
+                        let daysRemaining = max(0, 30 - (Calendar.current.dateComponents([.day], from: deletedAt, to: Date()).day ?? 0))
                         Text("Deletes automatically in \(daysRemaining) days")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -29,9 +32,9 @@ struct RecentlyDeletedView: View {
                 }
                 .swipeActions(edge: .trailing) {
                     Button(role: .destructive) {
-                        deletePermanently(doc)
+                        pendingDeletion = doc
                     } label: {
-                        Label("Delete", systemImage: "trash")
+                        Label("Delete Permanently", systemImage: "trash")
                     }
                 }
             }
@@ -43,6 +46,18 @@ struct RecentlyDeletedView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .alert("Delete Chapter Permanently?", isPresented: Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } })) {
+            Button("Cancel", role: .cancel) { pendingDeletion = nil }
+            Button("Delete Permanently", role: .destructive) {
+                if let document = pendingDeletion { deletePermanently(document) }
+                pendingDeletion = nil
+            }
+        } message: {
+            Text("The chapter and its generated audio will be removed. This cannot be undone.")
+        }
+        .alert("Deletion Incomplete", isPresented: Binding(get: { deletionError != nil }, set: { if !$0 { deletionError = nil } })) {
+            Button("OK") { deletionError = nil }
+        } message: { Text(deletionError ?? "") }
         .onAppear {
             autoPurge()
         }
@@ -53,11 +68,11 @@ struct RecentlyDeletedView: View {
     }
     
     private func deletePermanently(_ doc: Document) {
-        // Delete audio file if it exists
-        if let audioURL = doc.audioFileURL {
-            try? FileManager.default.removeItem(at: audioURL)
+        Task {
+            let result = await DocumentDeletion.permanentlyDelete([doc], context: modelContext)
+            do { try modelContext.save() } catch { deletionError = error.localizedDescription }
+            if result.failedEntries > 0 { deletionError = "The chapter was removed, but some cached audio could not be deleted." }
         }
-        modelContext.delete(doc)
     }
     
     private func autoPurge() {

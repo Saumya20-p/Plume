@@ -19,24 +19,20 @@ public class PlaybackCoordinator: ObservableObject {
     
     public func advanceNext() {
         guard let container = modelContainer else { return }
-        guard let nextID = PlaybackQueueManager.shared.popNext() else { return }
-        
-        // Create a fresh context for each advance to avoid stale-context issues
         let context = ModelContext(container)
-        let descriptor = FetchDescriptor<Document>(predicate: #Predicate { $0.id == nextID })
-        if let docs = try? context.fetch(descriptor), let nextDoc = docs.first {
+        while let nextID = PlaybackQueueManager.shared.popNext() {
+            let descriptor = FetchDescriptor<Document>(predicate: #Predicate { $0.id == nextID && $0.deletedAt == nil })
+            guard let nextDoc = try? context.fetch(descriptor).first else { continue }
             if AudioPlaybackEngine.shared.isPlayerViewPresented {
                 AudioPlaybackEngine.shared.presentedPlayerDocument = nextDoc
             }
-            if nextDoc.audioFileURL != nil || AudioPlaybackEngine.shared.isAppleActive {
-                AudioPlaybackEngine.shared.load(document: nextDoc)
-                AudioPlaybackEngine.shared.play()
-            } else {
-                // Generate then play
-                AudioPlaybackEngine.shared.load(document: nextDoc)
+            AudioGenerationManager.shared.cancelCurrentGeneration()
+            AudioPlaybackEngine.shared.load(document: nextDoc)
+            if nextDoc.audioFileURL == nil && !AudioPlaybackEngine.shared.isAppleActive {
                 AudioGenerationManager.shared.generate(document: nextDoc, playbackEngine: AudioPlaybackEngine.shared)
-                AudioPlaybackEngine.shared.play()
             }
+            AudioPlaybackEngine.shared.play()
+            return
         }
     }
 }

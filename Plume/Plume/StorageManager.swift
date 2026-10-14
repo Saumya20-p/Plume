@@ -17,3 +17,8 @@ public final class StorageManager {
         try? FileManager.default.createDirectory(at: audioCacheURL, withIntermediateDirectories: true)
     }
 }
+
+@MainActor
+extension AudioCacheStore {
+    static let shared = AudioCacheStore(root: StorageManager.shared.audioCacheURL)
+}

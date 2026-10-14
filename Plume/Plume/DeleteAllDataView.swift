@@ -10,6 +10,7 @@ struct DeleteAllDataView: View {
     
     @State private var showStep1 = false
     @State private var isDeleting = false
+    @State private var deletionError: String?
     
     var body: some View {
         Button(role: .destructive, action: {
@@ -20,7 +21,11 @@ struct DeleteAllDataView: View {
                 Spacer()
             }
         }
+        .disabled(isDeleting)
         .foregroundStyle(.red)
+        .alert("Deletion Incomplete", isPresented: Binding(get: { deletionError != nil }, set: { if !$0 { deletionError = nil } })) {
+            Button("OK") { deletionError = nil }
+        } message: { Text(deletionError ?? "") }
         .alert("Delete All Files?", isPresented: $showStep1) {
             Button("Cancel", role: .cancel) { }
             Button("Continue", role: .destructive) {
@@ -42,35 +47,12 @@ struct DeleteAllDataView: View {
             let allDocs = (try? modelContext.fetch(docDescriptor)) ?? documents
             let allFolders = (try? modelContext.fetch(folderDescriptor)) ?? folders
             
-            // Clear any playback queue and generation state FIRST to prevent UI crashes on deleted objects
-            AudioPlaybackEngine.shared.pause()
-            AudioPlaybackEngine.shared.currentDocument = nil
-            AudioPlaybackEngine.shared.presentedPlayerDocument = nil
-            AudioPlaybackEngine.shared.chunks = []
-            PlaybackProgress.shared.currentWord = nil
-            PlaybackProgress.shared.currentTime = 0
             PlaybackQueueManager.shared.clear()
-            AudioGenerationManager.shared.cancelCurrentGeneration()
-            
-            // Delete generated audio files and caches
-            let fileManager = FileManager.default
-            for document in allDocs {
-                if let url = document.audioFileURL {
-                    try? fileManager.removeItem(at: url)
-                }
-                try? fileManager.removeItem(at: document.audioCacheDirectory)
-            }
-            
-            // Delete SwiftData models (documents first to avoid .nullify cascade overhead)
-            for document in allDocs {
-                modelContext.delete(document)
-            }
-            for folder in allFolders {
-                modelContext.delete(folder)
-            }
-            
-            try? modelContext.save()
-            
+            let result = await DocumentDeletion.permanentlyDelete(allDocs, context: modelContext)
+            for folder in allFolders { modelContext.delete(folder) }
+            do { try modelContext.save() } catch { deletionError = error.localizedDescription }
+            if result.failedEntries > 0 { deletionError = "Files were removed, but some cached audio could not be deleted." }
+
             // Reset states
             isDeleting = false
         }

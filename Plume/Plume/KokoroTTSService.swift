@@ -599,6 +599,9 @@ public class AudioChunkGenerator {
     }
     
     public func nextChunk() async throws -> AudioChunk? {
+        let writer = try AudioCacheStore.shared.beginWriting(documentID: session.documentID)
+        defer { AudioCacheStore.shared.finishWriting(writer) }
+        try Task.checkCancellation()
         if currentIndex >= chunks.count { return nil }
         let chunk = chunks[currentIndex]
         let indexForChunk = currentIndex

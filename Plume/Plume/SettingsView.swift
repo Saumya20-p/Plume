@@ -8,6 +8,9 @@ struct SettingsView: View {
     @AppStorage("defaultSkipInterval") private var defaultSkipInterval: Int = 15
     @Query private var documents: [Document]
     
+    @State private var isClearingCache = false
+    @ObservedObject private var generation = AudioGenerationManager.shared
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showingClearCacheAlert = false
     @State private var cacheClearedMessage: String?
     @State private var cacheSizeString: String = "Calculating..."
@@ -67,13 +70,14 @@ struct SettingsView: View {
                     }
                     
                     Button(action: { showingClearCacheAlert = true }) {
-                        Text("Clear All Cached Audio")
+                        Text("Clear Unused Cached Audio")
                     }
-                    .alert("Clear Cached Audio?", isPresented: $showingClearCacheAlert) {
+                    .disabled(isClearingCache)
+                    .alert("Clear Unused Cached Audio?", isPresented: $showingClearCacheAlert) {
                         Button("Cancel", role: .cancel) { }
                         Button("Clear", role: .destructive) { clearCache() }
                     } message: {
-                        Text("This will delete all generated audio files, freeing up space. You can regenerate audio for chapters later.")
+                        Text("Removes unused generated audio. The current chapter and audio still being written are kept. You can regenerate cleared audio later.")
                     }
                     
                     NavigationLink(destination: RecentlyDeletedView()) {
@@ -100,10 +104,14 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .listStyle(.insetGrouped)
-            .safeAreaPadding(.bottom, 120)
-            .task(id: documents.count) {
-                await calculateCacheSize()
+            .task {
+                while !Task.isCancelled {
+                    await calculateCacheSize()
+                    try? await Task.sleep(for: .seconds(3))
+                }
             }
+            .onChange(of: generation.isGeneratingAny) { Task { await calculateCacheSize() } }
+            .onChange(of: scenePhase) { Task { await calculateCacheSize() } }
             .onAppear {
                 voicePreferences = VoicePreferencesStore().load()
             }
@@ -123,67 +131,21 @@ struct SettingsView: View {
     
     // MARK: - Cache Management
     private func calculateCacheSize() async {
-        // Extract URLs to avoid accessing SwiftData models off MainActor
-        let urls = documents.compactMap { $0.audioFileURL }
-        
-        let sizeString = await Task.detached { () -> String in
-            let fileManager = FileManager.default
-            var totalBytes: Int64 = 0
-            
-            for url in urls {
-                if let attributes = try? fileManager.attributesOfItem(atPath: url.path),
-                   let size = attributes[.size] as? Int64 {
-                    totalBytes += size
-                }
-            }
-            
-            let formatter = ByteCountFormatter()
-            formatter.allowedUnits = [.useMB, .useGB]
-            formatter.countStyle = .file
-            return formatter.string(fromByteCount: totalBytes)
-        }.value
-        
-        await MainActor.run {
-            self.cacheSizeString = sizeString
-        }
+        cacheSizeString = ByteCountFormatter.string(fromByteCount: AudioCacheStore.shared.totalBytes(), countStyle: .file)
     }
-    
+
     private func clearCache() {
-        // Extract documents with URLs
-        let docsWithAudio = documents.filter { $0.audioFileURL != nil }
-        let urls = docsWithAudio.compactMap { $0.audioFileURL }
-        
+        guard !isClearingCache else { return }
+        isClearingCache = true
         Task {
-            let filesDeleted = await Task.detached { () -> Int in
-                let fileManager = FileManager.default
-                var count = 0
-                for url in urls {
-                    do {
-                        try fileManager.removeItem(at: url)
-                        count += 1
-                    } catch {
-                        print("Failed to delete \(url.path): \(error.localizedDescription)")
-                    }
-                }
-                return count
-            }.value
-            
-            await MainActor.run {
-                
-                cacheClearedMessage = "Cleared \(filesDeleted) audio files."
-                
-                // Clear message after 3 seconds
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                    cacheClearedMessage = nil
-                }
-                
-                // Recalculate cache size
-                Task {
-                    await calculateCacheSize()
-                }
-            }
+            let result = await AudioCacheStore.shared.clearUnused(currentDocumentID: AudioPlaybackEngine.shared.currentDocument?.id)
+            let format: (Int64) -> String = { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+            cacheClearedMessage = "Cleared \(format(result.clearedBytes)). Kept \(format(result.retainedBytes)) in use. Failed to clear \(format(result.failedBytes)) (\(result.failedEntries) entries)."
+            isClearingCache = false
+            await calculateCacheSize()
         }
     }
+
 }
 
 #Preview {

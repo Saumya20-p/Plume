@@ -8,10 +8,12 @@ public class PlaybackQueueManager: ObservableObject {
     
     @Published public var queue: [UUID] = []
     
+    private let defaults: UserDefaults
     private let userDefaultsKey = "com.saumyapatel.Plume.playbackQueue"
     private var cancellables = Set<AnyCancellable>()
     
-    private init() {
+    internal init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         loadQueue()
         
         $queue
@@ -24,7 +26,7 @@ public class PlaybackQueueManager: ObservableObject {
     }
     
     private func loadQueue() {
-        if let data = UserDefaults.standard.data(forKey: userDefaultsKey),
+        if let data = defaults.data(forKey: userDefaultsKey),
            let savedQueue = try? JSONDecoder().decode([UUID].self, from: data) {
             self.queue = savedQueue
         }
@@ -32,7 +34,7 @@ public class PlaybackQueueManager: ObservableObject {
     
     private func performSaveQueue() {
         if let data = try? JSONEncoder().encode(queue) {
-            UserDefaults.standard.set(data, forKey: userDefaultsKey)
+            defaults.set(data, forKey: userDefaultsKey)
         }
     }
     
@@ -49,6 +51,8 @@ public class PlaybackQueueManager: ObservableObject {
         queue.insert(id, at: 0)
     }
     
+    public func remove(documentID: UUID) { remove(documentID) }
+
     public func remove(_ id: UUID) {
         queue.removeAll { $0 == id }
     }

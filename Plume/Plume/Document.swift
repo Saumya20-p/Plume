@@ -27,21 +27,13 @@ public final class Document {
         return TimeInterval(count) / 2.83
     }
     
-    // Dynamically check if the cached audio exists
-    @Transient private var _cachedAudioFileURL: URL?
-    @Transient private var _hasCheckedAudioFileURL: Bool = false
-
+    // Recheck after quarantine or generation, including earlier negative lookups.
     @Transient
     public var audioFileURL: URL? {
-        if _hasCheckedAudioFileURL { return _cachedAudioFileURL }
-        let fileURL = StorageManager.shared.audioCacheURL.appendingPathComponent("\(id.uuidString).m4a")
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            _cachedAudioFileURL = fileURL
-        }
-        _hasCheckedAudioFileURL = true
-        return _cachedAudioFileURL
+        let url = StorageManager.shared.audioCacheURL.appendingPathComponent("\(id.uuidString).m4a")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
-    
+
     @Transient
     public var audioCacheDirectory: URL {
         let dirURL = StorageManager.shared.audioCacheURL.appendingPathComponent(id.uuidString)

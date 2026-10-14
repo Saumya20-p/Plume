@@ -47,7 +47,7 @@ struct QueueSheetView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(doc.title)
                                         .font(.body.weight(.semibold))
-                                        .lineLimit(1)
+                                        .lineLimit(2)
                                     
                                     HStack {
                                         if doc.audioFileURL != nil {
@@ -100,11 +100,12 @@ struct QueueSheetView: View {
             return
         }
         let descriptor = FetchDescriptor<Document>(
-            predicate: #Predicate<Document> { queueIDs.contains($0.id) }
+            predicate: #Predicate<Document> { queueIDs.contains($0.id) && $0.deletedAt == nil }
         )
         if let docs = try? modelContext.fetch(descriptor) {
             let docDict = Dictionary(uniqueKeysWithValues: docs.map { ($0.id, $0) })
             queuedDocuments = queueIDs.compactMap { docDict[$0] }
+            for id in queueIDs where docDict[id] == nil { queueManager.remove(id) }
         }
     }
     

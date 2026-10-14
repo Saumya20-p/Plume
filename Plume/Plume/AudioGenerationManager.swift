@@ -105,7 +105,12 @@ public class AudioGenerationManager: ObservableObject {
             playbackEngine.load(document: document, generationSession: session)
         }
         
+        guard let writer = try? AudioCacheStore.shared.beginWriting(documentID: documentID) else {
+            completeGeneration(sessionID: session.id, documentID: documentID, playbackEngine: playbackEngine)
+            return
+        }
         generationTask = Task { @MainActor [weak self, weak playbackEngine] in
+            defer { AudioCacheStore.shared.finishWriting(writer) }
             guard let self, let playbackEngine else { return }
 
             defer {
@@ -280,7 +285,12 @@ public class AudioGenerationManager: ObservableObject {
         )
         speculativeSessionID = session.id
 
+        guard let writer = try? AudioCacheStore.shared.beginWriting(documentID: documentID) else {
+            cancelSpeculativePreparation()
+            return
+        }
         speculativeGenerationTask = Task { @MainActor [weak self, weak playbackEngine] in
+            defer { AudioCacheStore.shared.finishWriting(writer) }
             guard let self = self, let playbackEngine = playbackEngine else { return }
             defer {
                 if self.speculativeSessionID == session.id {
@@ -350,6 +360,8 @@ public class AudioGenerationManager: ObservableObject {
         document: Document,
         chunkIndex: Int
     ) async throws -> AudioChunk? {
+        let writer = try AudioCacheStore.shared.beginWriting(documentID: document.id)
+        defer { AudioCacheStore.shared.finishWriting(writer) }
         if let cancelTask = cancellationTask {
             await cancelTask.value
         }
