@@ -10,6 +10,9 @@ import SwiftData
 
 @main
 struct PlumeApp: App {
+    #if DEBUG
+    @State private var didLoadUIFixture = false
+    #endif
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Document.self,
@@ -18,6 +21,11 @@ struct PlumeApp: App {
         ])
         // We use the storage manager to ensure the DB writes to the shared group 
         // if available, or falls back gracefully on free tier.
+        #if DEBUG
+        if UIExperimentFixture.enabled {
+            return try! ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)])
+        }
+        #endif
         let storeURL = StorageManager.shared.swiftDataURL.appendingPathComponent("Plume.sqlite")
         let modelConfiguration = ModelConfiguration(schema: schema, url: storeURL)
 
@@ -38,6 +46,12 @@ struct PlumeApp: App {
             ContentView()
                 .onAppear {
                     PlaybackCoordinator.shared.configure(container: sharedModelContainer)
+                    #if DEBUG
+                    if !didLoadUIFixture {
+                        didLoadUIFixture = true
+                        UIExperimentFixture.populate(sharedModelContainer)
+                    }
+                    #endif
                 }
         }
         .modelContainer(sharedModelContainer)

@@ -106,9 +106,9 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
                 textView.textStorage.addAttribute(.backgroundColor, value: color, range: range)
             }
             if let range = newWordRange {
-                let color = isWarmTheme ? UIColor(red: 0.40, green: 0.29, blue: 0.22, alpha: 0.18) : UIColor(DesignSystem.accent)
+                let color = UIColor(DesignSystem.accent)
                 textView.textStorage.addAttribute(.backgroundColor, value: color, range: range)
-                textView.textStorage.addAttribute(.foregroundColor, value: isWarmTheme ? textColor : UIColor.white, range: range)
+                textView.textStorage.addAttribute(.foregroundColor, value: UIColor.white, range: range)
             }
             textView.textStorage.endEditing()
             coordinator.lastWordRange = newWordRange

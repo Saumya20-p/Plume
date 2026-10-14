@@ -82,7 +82,6 @@ struct PlayerView: View, Equatable {
             }
             .environment(\.colorScheme, colorScheme)
             .environment(\.dynamicTypeSize, dynamicTypeSize)
-            .environment(\.accessibilityReduceMotion, reduceMotion)
             .environment(\.legibilityWeight, legibilityWeight)
         )
         .ignoresSafeArea(edges: .bottom)
@@ -404,12 +403,7 @@ struct PlayerControlsView: View {
         Button {
             onInteraction()
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            playbackEngine.pause()
-            if generationManager.generatingDocumentIDs.contains(document.id) {
-                generationManager.cancelCurrentGeneration()
-            }
-            playbackEngine.clearMemory()
-            playbackEngine.currentDocument = nil
+            playbackEngine.stopAndRelease()
             onDismiss()
         } label: {
             Image(systemName: "stop.fill")

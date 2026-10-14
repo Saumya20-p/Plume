@@ -649,6 +649,7 @@ public class AudioPlaybackEngine: ObservableObject {
     
     
     func setupNowPlaying() {
+        setRemoteCommandsEnabled(true)
         guard let doc = currentDocument else { return }
         
         var nowPlayingInfo = [String: Any]()

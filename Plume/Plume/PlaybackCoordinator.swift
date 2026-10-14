@@ -20,19 +20,24 @@ public class PlaybackCoordinator: ObservableObject {
     public func advanceNext() {
         guard let container = modelContainer else { return }
         let context = ModelContext(container)
-        while let nextID = PlaybackQueueManager.shared.popNext() {
-            let descriptor = FetchDescriptor<Document>(predicate: #Predicate { $0.id == nextID && $0.deletedAt == nil })
-            guard let nextDoc = try? context.fetch(descriptor).first else { continue }
-            if AudioPlaybackEngine.shared.isPlayerViewPresented {
-                AudioPlaybackEngine.shared.presentedPlayerDocument = nextDoc
-            }
-            AudioGenerationManager.shared.cancelCurrentGeneration()
-            AudioPlaybackEngine.shared.load(document: nextDoc)
-            if nextDoc.audioFileURL == nil && !AudioPlaybackEngine.shared.isAppleActive {
-                AudioGenerationManager.shared.generate(document: nextDoc, playbackEngine: AudioPlaybackEngine.shared)
-            }
-            AudioPlaybackEngine.shared.play()
-            return
+        guard let nextDoc = Self.nextActiveQueuedDocument(in: context, queue: .shared) else { return }
+        if AudioPlaybackEngine.shared.isPlayerViewPresented {
+            AudioPlaybackEngine.shared.presentedPlayerDocument = nextDoc
         }
+        AudioGenerationManager.shared.cancelCurrentGeneration()
+        AudioPlaybackEngine.shared.load(document: nextDoc)
+        if nextDoc.audioFileURL == nil && !AudioPlaybackEngine.shared.isAppleActive {
+            AudioGenerationManager.shared.generate(document: nextDoc, playbackEngine: AudioPlaybackEngine.shared)
+        }
+        AudioPlaybackEngine.shared.play()
     }
+
+    static func nextActiveQueuedDocument(in context: ModelContext, queue: PlaybackQueueManager) -> Document? {
+        while let nextID = queue.popNext() {
+            let descriptor = FetchDescriptor<Document>(predicate: #Predicate { $0.id == nextID && $0.deletedAt == nil })
+            if let document = try? context.fetch(descriptor).first { return document }
+        }
+        return nil
+    }
+
 }

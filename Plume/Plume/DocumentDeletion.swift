@@ -12,14 +12,7 @@ enum DocumentDeletion {
         }
         let engine = AudioPlaybackEngine.shared
         if documents.contains(where: { $0.id == engine.currentDocument?.id }) {
-            AudioGenerationManager.shared.cancelCurrentGeneration()
-            engine.pause()
-            engine.clearMemory()
-            engine.currentDocument = nil
-            engine.presentedPlayerDocument = nil
-            engine.isPlayerViewPresented = false
-            PlaybackProgress.shared.currentWord = nil
-            PlaybackProgress.shared.currentTime = 0
+            engine.stopAndRelease()
         }
         var result = CacheClearResult()
         for document in documents {

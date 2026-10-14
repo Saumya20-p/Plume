@@ -56,7 +56,7 @@ final class AudioCacheStore {
         if documentID == nil {
             quarantined = entries(at: quarantine).map { ($0, Self.bytes(at: $0)) }
         }
-        for entry in entries(at: root) where entry != quarantine {
+        for entry in entries(at: root) where entry.lastPathComponent != ".quarantine" {
             let bytes = Self.bytes(at: entry)
             guard let id = Self.documentID(for: entry) else { result.retainedBytes += bytes; continue }
             guard documentID == nil || documentID == id else { continue }

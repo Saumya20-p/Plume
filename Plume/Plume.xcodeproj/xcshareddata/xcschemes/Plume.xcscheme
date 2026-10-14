@@ -40,6 +40,9 @@
                ReferencedContainer = "container:Plume.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference skipped="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B962CF3F3029A0DD002DBEA1" BuildableName="PlumeUITests.xctest" BlueprintName="PlumeUITests" ReferencedContainer="container:Plume.xcodeproj" />
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

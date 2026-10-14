@@ -7,6 +7,42 @@ import os
 import UIKit
 
 extension AudioPlaybackEngine {
+    /// Retire a session before dismissing or deleting its backing chapter.
+    public func stopAndRelease() {
+        AudioGenerationManager.shared.cancelCurrentGeneration()
+        pause()
+        currentSeekTask?.cancel()
+        currentSeekTask = nil
+        clearMemory()
+        removeTimeObserver()
+        removeEndObserver()
+        playerTimeControlCancellable?.cancel()
+        playerTimeControlCancellable = nil
+        queuePlayer = nil
+        isGenerationActive = false
+        currentDocument = nil
+        presentedPlayerDocument = nil
+        isPlayerViewPresented = false
+        currentWord = nil
+        currentTime = 0
+        duration = 0
+        virtualBaseOffset = 0
+        PlaybackProgress.shared.currentWord = nil
+        PlaybackProgress.shared.currentTime = 0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        setRemoteCommandsEnabled(false)
+        evaluateAudioSession()
+    }
+
+    func setRemoteCommandsEnabled(_ enabled: Bool) {
+        let center = MPRemoteCommandCenter.shared()
+        center.playCommand.isEnabled = enabled
+        center.pauseCommand.isEnabled = enabled
+        center.skipForwardCommand.isEnabled = enabled
+        center.skipBackwardCommand.isEnabled = enabled
+        center.changePlaybackPositionCommand.isEnabled = enabled
+    }
+
     func recordListeningSession() {
         if let startTime = wallClockSessionStartTime {
             let sessionDuration = Date().timeIntervalSinceReferenceDate - startTime
@@ -56,34 +92,34 @@ extension AudioPlaybackEngine {
         
         commandCenter.playCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
-            Task { @MainActor [weak self] in self?.play() }
+            Task { @MainActor [weak self] in if self?.currentDocument != nil { self?.play() } }
             return .success
         }
         
         commandCenter.pauseCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
-            Task { @MainActor [weak self] in self?.pause() }
+            Task { @MainActor [weak self] in if self?.currentDocument != nil { self?.pause() } }
             return .success
         }
         
         commandCenter.skipForwardCommand.preferredIntervals = [NSNumber(value: defaultSkipInterval)]
         commandCenter.skipForwardCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
-            Task { @MainActor [weak self] in self?.skipForward() }
+            Task { @MainActor [weak self] in if self?.currentDocument != nil { self?.skipForward() } }
             return .success
         }
         
         commandCenter.skipBackwardCommand.preferredIntervals = [NSNumber(value: defaultSkipInterval)]
         commandCenter.skipBackwardCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
-            Task { @MainActor [weak self] in self?.skipBackward() }
+            Task { @MainActor [weak self] in if self?.currentDocument != nil { self?.skipBackward() } }
             return .success
         }
         
         commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let self = self,
                   let positionEvent = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            Task { @MainActor [weak self] in self?.seek(to: positionEvent.positionTime) }
+            Task { @MainActor [weak self] in if self?.currentDocument != nil { self?.seek(to: positionEvent.positionTime) } }
             return .success
         }
     }
