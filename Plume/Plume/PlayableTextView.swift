@@ -281,6 +281,7 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
     private let themeFade = ReaderGradientView()
     private var headerClearance: CGFloat = 0
     private var reportedDockHeight: CGFloat = 0
+    private var maskTransitionFraction: CGFloat = -1
 
     init(controls: Controls) {
         controlsHost = UIHostingController(rootView: controls)
@@ -302,7 +303,8 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         // The effect itself is masked; its ancestors remain unmasked and opaque.
         veil.alpha = 1
         veil.isUserInteractionEnabled = false
-        veilMask.gradient.colors = [UIColor.clear.cgColor, UIColor.black.withAlphaComponent(0.9).cgColor]
+        let dockMaskColor = UIColor.black.withAlphaComponent(0.9).cgColor
+        veilMask.gradient.colors = [UIColor.clear.cgColor, dockMaskColor, dockMaskColor]
         view.addSubview(veil)
         themeFade.isUserInteractionEnabled = false
         view.addSubview(themeFade)
@@ -343,12 +345,18 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         let inset = UIEdgeInsets(top: max(headerClearance, view.safeAreaInsets.top) + 16, left: 16, bottom: dockHeight + 24, right: 16)
         if textView.textContainerInset != inset { textView.textContainerInset = inset }
         let effectiveDockHeight = reportedDockHeight > 0 ? reportedDockHeight : controlsHost.view.bounds.height
-        let start = min(view.bounds.maxY, max(headerClearance + 16, controlsHost.view.frame.maxY - effectiveDockHeight - 72))
+        let dockTop = controlsHost.view.frame.maxY - effectiveDockHeight
+        let start = min(view.bounds.maxY, max(headerClearance + 16, dockTop - 72))
         let veilFrame = CGRect(x: view.bounds.minX, y: start, width: view.bounds.width, height: max(0, view.bounds.maxY - start))
-        if veil.frame != veilFrame || veil.mask == nil {
+        let transitionFraction = min(1, max(0, (dockTop - start) / max(1, veilFrame.height)))
+        if veil.frame != veilFrame || maskTransitionFraction != transitionFraction || veil.mask == nil {
             veil.frame = veilFrame
             themeFade.frame = veilFrame
             veilMask.frame = veil.bounds
+            // A mask blends the fixed blur with the sharp text underneath.
+            // Finish the ramp above the dock, leaving only a faint trace of line structure.
+            veilMask.gradient.locations = [0, NSNumber(value: Double(transitionFraction)), 1]
+            maskTransitionFraction = transitionFraction
             veilMask.layoutIfNeeded()
             // UIKit copies effect masks. Reassign after resizing the original.
             veil.mask = nil
