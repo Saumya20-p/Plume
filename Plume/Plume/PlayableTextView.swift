@@ -1,255 +1,309 @@
 import SwiftUI
 import UIKit
-import AVFoundation
 
-struct PlayableTextView: UIViewRepresentable, Equatable {
+/// Keeps the reading surface and dock in one UIKit hierarchy, so the public
+/// scroll-edge interaction can derive its shape from the real SwiftUI controls.
+struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
     let text: String
     let currentWord: WordTimestamp?
-    let estimatedDuration: TimeInterval
-    
-    let fontFamily: String
+    let readerFont: ReaderFont
     let fontSize: Double
     let isBold: Bool
+    let systemBold: Bool
+    let contentSizeCategory: UIContentSizeCategory
     let lineSpacing: Double
     let textColor: UIColor
     let backgroundColor: UIColor
-    
+    let isWarmTheme: Bool
+    let canAutoResume: Bool
+    let reduceMotion: Bool
+    let returnRequest: Int
+    let interactionRequest: Int
+    let onBrowsingChanged: (Bool) -> Void
     let onWordTapped: (TimeInterval?, Int) -> Void
-    
-    static func == (lhs: PlayableTextView, rhs: PlayableTextView) -> Bool {
-        return lhs.text == rhs.text &&
-               lhs.currentWord == rhs.currentWord &&
-               lhs.fontFamily == rhs.fontFamily &&
-               lhs.fontSize == rhs.fontSize &&
-               lhs.isBold == rhs.isBold &&
-               lhs.lineSpacing == rhs.lineSpacing &&
-               lhs.textColor == rhs.textColor &&
-               lhs.backgroundColor == rhs.backgroundColor &&
-               lhs.estimatedDuration == rhs.estimatedDuration
+    let controls: Controls
+
+    func makeUIViewController(context: Context) -> ReaderViewController<Controls> {
+        let controller = ReaderViewController(controls: controls)
+        controller.loadViewIfNeeded()
+        controller.textView.delegate = context.coordinator
+        context.coordinator.textView = controller.textView
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
+        controller.textView.addGestureRecognizer(tap)
+        return controller
     }
-    
-    func makeUIView(context: Context) -> UITextView {
-        let textView = UITextView()
-        textView.isEditable = false
-        textView.isSelectable = false
-        textView.isScrollEnabled = true
-        textView.backgroundColor = .clear
-        textView.textContainerInset = UIEdgeInsets(top: 16, left: 16, bottom: 280, right: 16)
-        textView.showsVerticalScrollIndicator = false
-        textView.delegate = context.coordinator
-        
-        let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
-        textView.addGestureRecognizer(tapGesture)
-        
-        return textView
-    }
-    
-    func updateUIView(_ uiView: UITextView, context: Context) {
+
+    func updateUIViewController(_ controller: ReaderViewController<Controls>, context: Context) {
         let coordinator = context.coordinator
         coordinator.parent = self
-        
-        let baseFont = UIFont(name: fontFamily, size: CGFloat(fontSize)) ?? UIFont.systemFont(ofSize: CGFloat(fontSize))
-        var traitCollection: UIFontDescriptor.SymbolicTraits = []
-        if isBold { traitCollection.insert(.traitBold) }
-        
-        let fontDescriptor = baseFont.fontDescriptor.withSymbolicTraits(traitCollection) ?? baseFont.fontDescriptor
-        let font = UIFont(descriptor: fontDescriptor, size: CGFloat(fontSize))
-        
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = CGFloat(lineSpacing)
-        
-        // 1. Check if full rebuild is needed
-        let styleChanged = coordinator.lastFontFamily != fontFamily ||
-                           coordinator.lastFontSize != fontSize ||
-                           coordinator.lastIsBold != isBold ||
-                           coordinator.lastLineSpacing != lineSpacing ||
-                           coordinator.lastTextColor != textColor ||
-                           coordinator.lastText != text
-        
-        if styleChanged || uiView.attributedText == nil || uiView.attributedText.length == 0 {
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: font,
-                .foregroundColor: textColor,
-                .paragraphStyle: paragraphStyle
-            ]
-            
-            uiView.attributedText = NSAttributedString(string: text, attributes: attributes)
-            
+        controller.controlsHost.rootView = controls
+        controller.view.backgroundColor = backgroundColor
+        let textView = controller.textView
+        let font = makeFont()
+        let rebuilt = coordinator.lastText != text || coordinator.lastFont != font ||
+            coordinator.lastLineSpacing != lineSpacing || coordinator.lastTextColor != textColor ||
+            coordinator.lastWarmTheme != isWarmTheme
+
+        if coordinator.lastText != text {
+            coordinator.cancelResume()
+            coordinator.follow = ReaderFollowContract()
+            coordinator.lastScrolledWordCharIndex = -1
+        }
+        if rebuilt {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineSpacing = CGFloat(lineSpacing)
+            textView.attributedText = NSAttributedString(string: text, attributes: [
+                .font: font, .foregroundColor: textColor, .paragraphStyle: paragraph
+            ])
             coordinator.lastText = text
-            coordinator.lastFontFamily = fontFamily
-            coordinator.lastFontSize = fontSize
-            coordinator.lastIsBold = isBold
+            coordinator.lastFont = font
             coordinator.lastLineSpacing = lineSpacing
             coordinator.lastTextColor = textColor
+            coordinator.lastWarmTheme = isWarmTheme
             coordinator.lastWordRange = nil
             coordinator.lastParagraphRange = nil
             coordinator.lastScrolledWordCharIndex = -1
         }
-        
-        // 2. Find current word using passed index
-        let currentWord = self.currentWord
-        
-        // 3. Update highlights efficiently
-        let wordChanged = coordinator.lastCurrentWord != currentWord
-        
-        var newWordRange: NSRange? = coordinator.lastWordRange
-        var newParagraphRange: NSRange? = coordinator.lastParagraphRange
-        
-        // Only run the heavy string math if the word actually changed or text rebuilt
-        if styleChanged || wordChanged {
-            newWordRange = nil
-            newParagraphRange = nil
-            
-            if let currentWord = currentWord, let loc = currentWord.rangeLocation, let len = currentWord.rangeLength {
-                let nsRange = NSRange(location: loc, length: len)
-                if nsRange.location + nsRange.length <= text.utf16.count {
-                    newWordRange = nsRange
-                    let nsString = text as NSString
-                    newParagraphRange = nsString.paragraphRange(for: nsRange)
-                }
+
+        let allowed = canAutoResume && !UIAccessibility.isVoiceOverRunning
+        coordinator.follow.setAutoResumeAllowed(allowed, now: ProcessInfo.processInfo.systemUptime)
+        if coordinator.lastInteractionRequest != interactionRequest {
+            coordinator.lastInteractionRequest = interactionRequest
+            if coordinator.follow.isBrowsing && !coordinator.follow.isInteracting {
+                coordinator.follow.endInteraction(now: ProcessInfo.processInfo.systemUptime)
             }
-            coordinator.lastCurrentWord = currentWord
         }
-        
-        let needsUpdate = coordinator.lastWordRange != newWordRange || coordinator.lastParagraphRange != newParagraphRange
-        
-        if needsUpdate {
-            uiView.textStorage.beginEditing()
-            
-            // Unhighlight previous
-            if let oldParagraph = coordinator.lastParagraphRange {
-                uiView.textStorage.removeAttribute(.backgroundColor, range: oldParagraph)
+        coordinator.scheduleResume()
+
+        var newWordRange: NSRange?
+        var newParagraphRange: NSRange?
+        if let word = currentWord, let location = word.rangeLocation, let length = word.rangeLength,
+           location >= 0, length >= 0, location <= textView.textStorage.length,
+           length <= textView.textStorage.length - location {
+            let range = NSRange(location: location, length: length)
+            newWordRange = range
+            newParagraphRange = (text as NSString).paragraphRange(for: range)
+        }
+        if coordinator.lastWordRange != newWordRange || coordinator.lastParagraphRange != newParagraphRange {
+            textView.textStorage.beginEditing()
+            if let range = coordinator.lastParagraphRange { textView.textStorage.removeAttribute(.backgroundColor, range: range) }
+            if let range = coordinator.lastWordRange {
+                textView.textStorage.removeAttribute(.backgroundColor, range: range)
+                textView.textStorage.addAttribute(.foregroundColor, value: textColor, range: range)
             }
-            if let oldWord = coordinator.lastWordRange {
-                uiView.textStorage.removeAttribute(.backgroundColor, range: oldWord)
-                uiView.textStorage.removeAttribute(.foregroundColor, range: oldWord)
-                uiView.textStorage.addAttribute(.foregroundColor, value: textColor, range: oldWord)
+            if let range = newParagraphRange {
+                let color = isWarmTheme ? UIColor(red: 0.40, green: 0.29, blue: 0.22, alpha: 0.09) : UIColor(DesignSystem.accent).withAlphaComponent(0.15)
+                textView.textStorage.addAttribute(.backgroundColor, value: color, range: range)
             }
-            
-            // Highlight new
-            if let newParagraph = newParagraphRange {
-                uiView.textStorage.addAttribute(.backgroundColor, value: UIColor(DesignSystem.accent).withAlphaComponent(0.2), range: newParagraph)
+            if let range = newWordRange {
+                let color = isWarmTheme ? UIColor(red: 0.40, green: 0.29, blue: 0.22, alpha: 0.18) : UIColor(DesignSystem.accent)
+                textView.textStorage.addAttribute(.backgroundColor, value: color, range: range)
+                textView.textStorage.addAttribute(.foregroundColor, value: isWarmTheme ? textColor : UIColor.white, range: range)
             }
-            if let newWord = newWordRange {
-                uiView.textStorage.addAttribute(.backgroundColor, value: UIColor(DesignSystem.accent), range: newWord)
-                uiView.textStorage.addAttribute(.foregroundColor, value: UIColor.white, range: newWord)
-            }
-            
-            uiView.textStorage.endEditing()
+            textView.textStorage.endEditing()
             coordinator.lastWordRange = newWordRange
             coordinator.lastParagraphRange = newParagraphRange
         }
-        
-        // 4. Auto-scroll logic
-        if !coordinator.isUserScrolling, let nsRange = newWordRange, let currentWord = currentWord, let loc = currentWord.rangeLocation {
-            // Only scroll if this is a new word
-            if coordinator.lastScrolledWordCharIndex != loc {
-                coordinator.lastScrolledWordCharIndex = loc
-                
-                // Slight delay to ensure layout is done
-                DispatchQueue.main.async {
-                    if let textPositionStart = uiView.position(from: uiView.beginningOfDocument, offset: nsRange.location),
-                       let textPositionEnd = uiView.position(from: textPositionStart, offset: nsRange.length),
-                       let textRange = uiView.textRange(from: textPositionStart, to: textPositionEnd) {
-                        
-                        let rect = uiView.firstRect(for: textRange) // Bounding box of the word
-                        
-                        // Define the Focus Zone (top 15-25% of the screen)
-                        let focusZoneTop = uiView.contentOffset.y + (uiView.bounds.height * 0.15)
-                        let focusZoneBottom = uiView.contentOffset.y + (uiView.bounds.height * 0.25)
-                        
-                        var targetOffset: CGPoint? = nil
-                        
-                        if rect.maxY > focusZoneBottom {
-                            let requiredShift = rect.maxY - focusZoneBottom
-                            targetOffset = CGPoint(x: 0, y: uiView.contentOffset.y + requiredShift)
-                        } else if rect.minY < focusZoneTop {
-                            let requiredShift = focusZoneTop - rect.minY
-                            targetOffset = CGPoint(x: 0, y: uiView.contentOffset.y - requiredShift)
-                        }
-                        
-                        if let target = targetOffset {
-                            let maxOffsetY = max(-uiView.adjustedContentInset.top, uiView.contentSize.height - uiView.bounds.height + uiView.adjustedContentInset.bottom)
-                            let clampedY = max(-uiView.adjustedContentInset.top, min(target.y, maxOffsetY))
-                            uiView.setContentOffset(CGPoint(x: 0, y: clampedY), animated: true)
-                        }
-                    }
-                }
-            }
+
+        if coordinator.lastReturnRequest != returnRequest {
+            coordinator.lastReturnRequest = returnRequest
+            coordinator.returnToCurrentWord()
+        } else if !coordinator.follow.isBrowsing && (allowed || rebuilt) {
+            coordinator.scrollToCurrentWord(force: rebuilt)
         }
     }
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
+
+    static func dismantleUIViewController(_ controller: ReaderViewController<Controls>, coordinator: Coordinator) {
+        coordinator.cancelResume()
+        controller.textView.delegate = nil
+        coordinator.textView = nil
     }
-    
-    class Coordinator: NSObject, UITextViewDelegate {
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    private func makeFont() -> UIFont {
+        let size = CGFloat(fontSize)
+        let bold = isBold || systemBold
+        let base: UIFont
+        if readerFont == .georgia {
+            base = UIFont(name: bold ? "Georgia-Bold" : "Georgia", size: size) ?? .systemFont(ofSize: size)
+        } else {
+            let system = UIFont.systemFont(ofSize: size, weight: bold ? .bold : .regular)
+            let design: UIFontDescriptor.SystemDesign
+            switch readerFont {
+            case .georgia, .system: design = .default
+            case .serif: design = .serif
+            case .rounded: design = .rounded
+            case .monospaced: design = .monospaced
+            }
+            base = UIFont(descriptor: system.fontDescriptor.withDesign(design) ?? system.fontDescriptor, size: size)
+        }
+        return UIFontMetrics(forTextStyle: .body).scaledFont(for: base, compatibleWith: UITraitCollection(preferredContentSizeCategory: contentSizeCategory))
+    }
+
+    @MainActor final class Coordinator: NSObject, UITextViewDelegate {
         var parent: PlayableTextView
-        var lastScrolledWordCharIndex: Int = -1
-        var isUserScrolling: Bool = false
-        var scrollResumeTimer: Timer?
-        
+        weak var textView: UITextView?
+        var follow = ReaderFollowContract()
+        var resumeTask: Task<Void, Never>?
+        var scheduledRevision: Int?
+        var lastReturnRequest: Int
+        var lastInteractionRequest: Int
+        var lastScrolledWordCharIndex = -1
         var lastText: String?
-        var lastFontFamily: String?
-        var lastFontSize: Double?
-        var lastIsBold: Bool?
+        var lastFont: UIFont?
         var lastLineSpacing: Double?
         var lastTextColor: UIColor?
+        var lastWarmTheme: Bool?
         var lastWordRange: NSRange?
         var lastParagraphRange: NSRange?
-        var lastCurrentWord: WordTimestamp?
-        
+
         init(_ parent: PlayableTextView) {
             self.parent = parent
+            lastReturnRequest = parent.returnRequest
+            lastInteractionRequest = parent.interactionRequest
         }
-        
+
+        deinit { resumeTask?.cancel() }
+
+        func cancelResume() {
+            resumeTask?.cancel()
+            resumeTask = nil
+            scheduledRevision = nil
+        }
+
+        func scheduleResume() {
+            guard let deadline = follow.deadline else { cancelResume(); return }
+            guard scheduledRevision != follow.revision else { return }
+            cancelResume()
+            let revision = follow.revision
+            scheduledRevision = revision
+            let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime)
+            resumeTask = Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                guard !Task.isCancelled, let self, self.textView != nil,
+                      self.follow.resumeIfDue(now: ProcessInfo.processInfo.systemUptime, revision: revision) else { return }
+                self.cancelResume()
+                self.parent.onBrowsingChanged(false)
+                self.scrollToCurrentWord(force: true)
+            }
+        }
+
+        func returnToCurrentWord() {
+            cancelResume()
+            follow.returnToCurrentWord()
+            scrollToCurrentWord(force: true)
+        }
+
+        func scrollToCurrentWord(force: Bool) {
+            guard let textView, let range = lastWordRange,
+                  force || lastScrolledWordCharIndex != range.location,
+                  let start = textView.position(from: textView.beginningOfDocument, offset: range.location),
+                  let end = textView.position(from: start, offset: range.length),
+                  let textRange = textView.textRange(from: start, to: end) else { return }
+            textView.layoutManager.ensureLayout(for: textView.textContainer)
+            let rect = textView.firstRect(for: textRange)
+            guard !rect.isNull, rect.minY.isFinite, textView.bounds.height > 0 else { return }
+            lastScrolledWordCharIndex = range.location
+            let visibleHeight = max(1, textView.bounds.height - textView.textContainerInset.top - textView.textContainerInset.bottom)
+            let top = textView.contentOffset.y + textView.textContainerInset.top + visibleHeight * 0.15
+            let bottom = textView.contentOffset.y + textView.textContainerInset.top + visibleHeight * 0.25
+            var target = textView.contentOffset.y
+            if rect.maxY > bottom { target += rect.maxY - bottom }
+            else if rect.minY < top { target -= top - rect.minY }
+            let maxOffset = max(-textView.adjustedContentInset.top, textView.contentSize.height - textView.bounds.height + textView.adjustedContentInset.bottom)
+            target = max(-textView.adjustedContentInset.top, min(target, maxOffset))
+            textView.setContentOffset(CGPoint(x: 0, y: target), animated: !parent.reduceMotion && !UIAccessibility.isVoiceOverRunning)
+        }
+
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-            isUserScrolling = true
-            scrollResumeTimer?.invalidate()
-            scrollResumeTimer = nil
+            cancelResume()
+            follow.beginInteraction()
+            parent.onBrowsingChanged(true)
         }
-        
-        private func scheduleResumeTimer() {
-            scrollResumeTimer?.invalidate()
-            let timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
-                guard let self = self else { return }
-                self.isUserScrolling = false
-                self.lastScrolledWordCharIndex = -1 // Force an immediate re-center on the next word tick
-            }
-            timer.tolerance = 0.3
-            scrollResumeTimer = timer
-        }
-        
+
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-            if !decelerate {
-                scheduleResumeTimer()
-            }
+            if !decelerate { endInteraction() }
         }
-        
-        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-            scheduleResumeTimer()
+
+        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { endInteraction() }
+
+        private func endInteraction() {
+            follow.endInteraction(now: ProcessInfo.processInfo.systemUptime)
+            scheduleResume()
         }
-        
+
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let textView = gesture.view as? UITextView else { return }
-            
-            var location = gesture.location(in: textView)
-            location.x -= textView.textContainerInset.left
-            location.y -= textView.textContainerInset.top
-            
-            let layoutManager = textView.layoutManager
-            let textContainer = textView.textContainer
-            
-            let characterIndex = layoutManager.characterIndex(for: location, in: textContainer, fractionOfDistanceBetweenInsertionPoints: nil)
-            guard characterIndex < textView.textStorage.length else { return }
-            
-            let glyphIndex = layoutManager.glyphIndexForCharacter(at: characterIndex)
-            let boundingRect = layoutManager.boundingRect(forGlyphRange: NSRange(location: glyphIndex, length: 1), in: textContainer)
-            if !boundingRect.insetBy(dx: -15, dy: -15).contains(location) { return }
-            
-            // Always pass the character index, AudioPlaybackEngine will find the timestamp
+            if follow.isBrowsing && !follow.isInteracting {
+                follow.endInteraction(now: ProcessInfo.processInfo.systemUptime)
+                scheduleResume()
+            }
+            var point = gesture.location(in: textView)
+            point.x -= textView.textContainerInset.left
+            point.y -= textView.textContainerInset.top
+            let index = textView.layoutManager.characterIndex(for: point, in: textView.textContainer, fractionOfDistanceBetweenInsertionPoints: nil)
+            guard index < textView.textStorage.length else { return }
+            let glyph = textView.layoutManager.glyphIndexForCharacter(at: index)
+            let rect = textView.layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textView.textContainer)
+            guard rect.insetBy(dx: -15, dy: -15).contains(point) else { return }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            parent.onWordTapped(nil, characterIndex)
+            parent.onWordTapped(nil, index)
         }
+    }
+}
+
+@MainActor final class ReaderViewController<Controls: View>: UIViewController {
+    let textView = UITextView()
+    let controlsHost: UIHostingController<Controls>
+
+    init(controls: Controls) {
+        controlsHost = UIHostingController(rootView: controls)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        textView.isEditable = false
+        textView.isSelectable = false
+        textView.backgroundColor = .clear
+        textView.contentInsetAdjustmentBehavior = .never
+        textView.showsVerticalScrollIndicator = false
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(textView)
+
+        addChild(controlsHost)
+        controlsHost.sizingOptions = .intrinsicContentSize
+        controlsHost.view.backgroundColor = .clear
+        controlsHost.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(controlsHost.view)
+        controlsHost.didMove(toParent: self)
+        NSLayoutConstraint.activate([
+            textView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            textView.topAnchor.constraint(equalTo: view.topAnchor),
+            textView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            controlsHost.view.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            controlsHost.view.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            controlsHost.view.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
+        ])
+        if #available(iOS 26.0, *) {
+            textView.bottomEdgeEffect.style = .soft
+            let interaction = UIScrollEdgeElementContainerInteraction()
+            interaction.scrollView = textView
+            interaction.edge = .bottom
+            controlsHost.view.addInteraction(interaction)
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // Content still draws beneath the dock, with sufficient measured space
+        // for the final line to scroll entirely above the controls.
+        let dockHeight = max(0, view.bounds.maxY - controlsHost.view.frame.minY)
+        let inset = UIEdgeInsets(top: view.safeAreaInsets.top + 16, left: 16, bottom: dockHeight + 24, right: 16)
+        if textView.textContainerInset != inset { textView.textContainerInset = inset }
     }
 }

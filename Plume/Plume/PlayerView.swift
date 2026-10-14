@@ -15,6 +15,16 @@ struct PlayerView: View, Equatable {
     @State private var showAppearanceSettings = false
     @State private var showQueueSheet = false
     @State private var isExplicitlyDismissing = false
+    @State private var isBrowsing = false
+    @State private var returnRequest = 0
+    @State private var interactionRequest = 0
+    @State private var controlsSheetPresented = false
+    @State private var readerVisible = false
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.legibilityWeight) private var legibilityWeight
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var appearanceManager = AppearanceManager.shared
@@ -22,77 +32,57 @@ struct PlayerView: View, Equatable {
     var body: some View {
         let activeTheme = appearanceManager.activeTheme(colorScheme: colorScheme)
         
-        ZStack(alignment: .bottom) {
-            activeTheme.backgroundColor.ignoresSafeArea()
-            
-            // ALWAYS show the text
-            PlayableTextView(
-                text: document.bodyText,
-                currentWord: progress.currentWord,
-                estimatedDuration: document.estimatedDuration,
-                fontFamily: appearanceManager.fontFamily,
-                fontSize: appearanceManager.fontSize,
-                isBold: appearanceManager.isBold,
-                lineSpacing: appearanceManager.lineSpacing,
-                textColor: UIColor(activeTheme.textColor),
-                backgroundColor: UIColor(activeTheme.backgroundColor),
-                onWordTapped: { _, charIndex in
-                    playbackEngine.seek(toCharIndex: charIndex)
-                    if !playbackEngine.isPlaying {
-                        playbackEngine.play()
+        PlayableTextView(
+            text: document.bodyText,
+            currentWord: progress.currentWord,
+            readerFont: appearanceManager.readerFont,
+            fontSize: appearanceManager.fontSize,
+            isBold: appearanceManager.isBold,
+            systemBold: legibilityWeight == .bold,
+            contentSizeCategory: dynamicTypeSize.uiContentSizeCategory,
+            lineSpacing: appearanceManager.lineSpacing,
+            textColor: UIColor(activeTheme.textColor),
+            backgroundColor: UIColor(activeTheme.backgroundColor),
+            isWarmTheme: activeTheme == .warm,
+            canAutoResume: readerVisible && playbackEngine.isPlaying && scenePhase == .active &&
+                !showQueueSheet && !showAppearanceSettings && !controlsSheetPresented && !voiceOverEnabled,
+            reduceMotion: reduceMotion,
+            returnRequest: returnRequest,
+            interactionRequest: interactionRequest,
+            onBrowsingChanged: { isBrowsing = $0 },
+            onWordTapped: { _, charIndex in
+                playbackEngine.seek(toCharIndex: charIndex)
+                if !playbackEngine.isPlaying { playbackEngine.play() }
+            },
+            controls: VStack(spacing: 8) {
+                if isBrowsing {
+                    Button("Return to Current Word", systemImage: "text.line.first.and.arrowtriangle.forward") {
+                        isBrowsing = false
+                        returnRequest += 1
                     }
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 44)
+                    .background(.regularMaterial, in: Capsule())
+                    .accessibilityHint("Moves the reader to the spoken word")
                 }
-            )
-            .equatable()
-            .ignoresSafeArea(edges: [.top, .bottom])
-            
-            // --- BOTTOM VEIL (True Progressive Blur) ---
-            VariableBlurView(direction: .bottomToTop, maxBlurRadius: 10)
-                .mask(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .clear, location: 0.0),
-                            .init(color: .black.opacity(0.8), location: 0.6),
-                            .init(color: .black.opacity(0.9), location: 1.0)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
+                PlayerControlsView(
+                    document: document,
+                    playbackEngine: playbackEngine,
+                    generationManager: generationManager,
+                    showQueueSheet: $showQueueSheet,
+                    onSheetPresentationChanged: { controlsSheetPresented = $0 },
+                    onInteraction: { interactionRequest += 1 },
+                    onDismiss: {
+                        isExplicitlyDismissing = true
+                        playbackEngine.presentedPlayerDocument = nil
+                        dismiss()
+                    }
                 )
-                .frame(height: 240)
-                .frame(maxHeight: .infinity, alignment: .bottom)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-            
-            // --- THEME-MATCHING FADE ---
-            LinearGradient(
-                stops: [
-                    .init(color: activeTheme.backgroundColor.opacity(0.0), location: 0.0),
-                    .init(color: activeTheme.backgroundColor.opacity(0.85), location: 0.6),
-                    .init(color: activeTheme.backgroundColor.opacity(0.95), location: 1.0)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 240)
-            .frame(maxHeight: .infinity, alignment: .bottom)
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-            
-            PlayerControlsView(
-                document: document,
-                playbackEngine: playbackEngine,
-                generationManager: generationManager,
-                showQueueSheet: $showQueueSheet,
-                onDismiss: {
-                    isExplicitlyDismissing = true
-                    playbackEngine.presentedPlayerDocument = nil
-                    dismiss()
-                }
-            )
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
-        }
+            }
+            .environment(\.colorScheme, colorScheme)
+        )
+        .ignoresSafeArea(edges: .bottom)
         .navigationTitle(document.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -105,6 +95,7 @@ struct PlayerView: View, Equatable {
                     Image(systemName: "chevron.down")
                         .fontWeight(.semibold)
                 }
+                .accessibilityLabel("Minimize Player")
             }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
@@ -112,6 +103,7 @@ struct PlayerView: View, Equatable {
                 } label: {
                     Image(systemName: "textformat.size")
                 }
+                .accessibilityLabel("Reading Appearance")
             }
         }
         .sheet(isPresented: $showQueueSheet) {
@@ -122,6 +114,7 @@ struct PlayerView: View, Equatable {
                 .environmentObject(appearanceManager)
         }
         .onAppear {
+            readerVisible = true
             playbackEngine.isPlayerViewPresented = true
             
             if playbackEngine.currentDocument?.id != document.id {
@@ -144,6 +137,7 @@ struct PlayerView: View, Equatable {
             }
         }
         .onDisappear {
+            readerVisible = false
             playbackEngine.isPlayerViewPresented = false
             // Don't cancel if audio has finished generating or if we are actively playing and backgrounding.
             // Only cancel in-flight work if the user explicitly closed the player and playback is stopped.
@@ -177,6 +171,8 @@ struct PlayerControlsView: View {
     @ObservedObject var progress = PlaybackProgress.shared
     @ObservedObject var generationManager: AudioGenerationManager
     @Binding var showQueueSheet: Bool
+    var onSheetPresentationChanged: (Bool) -> Void
+    var onInteraction: () -> Void
     var onDismiss: () -> Void
     @State private var showSpeedSheet = false
     @State private var showVoiceSheet = false
@@ -189,9 +185,18 @@ struct PlayerControlsView: View {
     
     var body: some View {
         VStack(spacing: 4) {
+            LiveEdgeScrubber(
+                currentTime: $progress.currentTime,
+                generatedDuration: playbackEngine.duration,
+                estimatedDuration: document.estimatedDuration,
+                isFullyGenerated: document.audioFileURL != nil,
+                onInteraction: onInteraction,
+                onSeek: { playbackEngine.seek(to: $0) }
+            )
             // Top Row
             HStack {
                 Button {
+                    onInteraction()
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     showQueueSheet = true
                 } label: {
@@ -201,6 +206,7 @@ struct PlayerControlsView: View {
                         .frame(width: 44, height: 44)
                 }
                 .buttonStyle(ScaleButtonStyle())
+                .accessibilityLabel("Up Next")
                 
                 Spacer()
                 
@@ -218,6 +224,7 @@ struct PlayerControlsView: View {
                 Spacer()
                 
                 Button {
+                    onInteraction()
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     playbackEngine.pause()
                     if generationManager.generatingDocumentIDs.contains(document.id) {
@@ -231,12 +238,14 @@ struct PlayerControlsView: View {
                         .frame(width: 44, height: 44)
                 }
                 .buttonStyle(ScaleButtonStyle())
+                .accessibilityLabel("Stop Playback and Close Player")
             }
             
             // Bottom Row
             HStack(spacing: 0) {
                 // Speed Button
                 Button(action: {
+                    onInteraction()
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     showSpeedSheet = true
                 }) {
@@ -247,6 +256,7 @@ struct PlayerControlsView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(ScaleButtonStyle())
+                .accessibilityLabel("Reading Speed")
                 
                 Spacer()
                 
@@ -254,6 +264,7 @@ struct PlayerControlsView: View {
                 let skipVal = interval == 0 ? 15 : interval
                 
                 Button(action: { 
+                    onInteraction()
                     UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
                     playbackEngine.skipBackward() 
                 }) {
@@ -264,10 +275,12 @@ struct PlayerControlsView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(ScaleButtonStyle())
+                .accessibilityLabel("Skip Back \(skipVal) Seconds")
                 
                 Spacer()
                 
                 Button(action: {
+                    onInteraction()
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     let isGenerating = !playbackEngine.isAppleActive && generationManager.generatingDocumentIDs.contains(document.id) && playbackEngine.chunks.isEmpty && document.audioFileURL == nil
                     
@@ -310,10 +323,12 @@ struct PlayerControlsView: View {
                         )
                 }
                 .buttonStyle(ScaleButtonStyle())
+                .accessibilityLabel(playbackEngine.isPlaying ? "Pause Playback" : "Play")
                 
                 Spacer()
                 
                 Button(action: { 
+                    onInteraction()
                     UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
                     playbackEngine.skipForward() 
                 }) {
@@ -324,11 +339,13 @@ struct PlayerControlsView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(ScaleButtonStyle())
+                .accessibilityLabel("Skip Forward \(skipVal) Seconds")
                 
                 Spacer()
                 
                 // Voice Button
                 Button(action: {
+                    onInteraction()
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     showVoiceSheet = true
                 }) {
@@ -339,31 +356,24 @@ struct PlayerControlsView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(ScaleButtonStyle())
+                .accessibilityLabel("Choose Voice")
             }
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 16) 
-        .padding(.top, 16)
+        .padding(.top, 4)
         .contentShape(Rectangle()) // Capture all taps so they don't fall through to text!
         .background(
             .regularMaterial,
             in: RoundedRectangle(cornerRadius: 24, style: .continuous)
         )
-        .overlay(alignment: .top) {
-            LiveEdgeScrubber(
-                currentTime: $progress.currentTime,
-                generatedDuration: playbackEngine.duration,
-                estimatedDuration: document.estimatedDuration,
-                isFullyGenerated: document.audioFileURL != nil,
-                onSeek: { targetTime in
-                    playbackEngine.seek(to: targetTime)
-                }
-            )
-            // No offset needed if we want it completely inside the top edge, or offset slightly but clip it
-        }
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 5)
 
+        .onChange(of: showSpeedSheet || showVoiceSheet) { _, presented in
+            onSheetPresentationChanged(presented)
+        }
+        .onDisappear { onSheetPresentationChanged(false) }
         .sheet(isPresented: $showSpeedSheet) {
             SpeedSettingsView()
         }
@@ -374,11 +384,12 @@ struct PlayerControlsView: View {
 }
 
 struct ScaleButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .opacity(configuration.isPressed ? 0.7 : 1.0)
-            .scaleEffect(configuration.isPressed ? 0.9 : 1.0)
-            .animation(.interactiveSpring(response: 0.2, dampingFraction: 0.5, blendDuration: 0.5), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.9 : 1.0)
+            .animation(reduceMotion ? nil : .interactiveSpring(response: 0.2, dampingFraction: 0.5, blendDuration: 0.5), value: configuration.isPressed)
     }
 }
 
@@ -387,74 +398,72 @@ struct LiveEdgeScrubber: View {
     let generatedDuration: TimeInterval
     let estimatedDuration: TimeInterval
     let isFullyGenerated: Bool
+    let onInteraction: () -> Void
     let onSeek: (TimeInterval) -> Void
-    
-    @State private var dragTime: TimeInterval? = nil
-    @State private var isDragging: Bool = false
-    
+    @State private var dragTime: TimeInterval?
+
+    private var totalTime: TimeInterval {
+        let total = isFullyGenerated ? generatedDuration : estimatedDuration
+        return total.isFinite ? max(0, total) : 0
+    }
+
+    private func positionLabel(_ time: TimeInterval) -> String {
+        let seconds = Int(max(0, time.isFinite ? time : 0))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
     var body: some View {
         GeometryReader { geometry in
-            let totalTime = isFullyGenerated ? generatedDuration : estimatedDuration
-            let validTotal = totalTime > 0 ? totalTime : 1
-            
+            let validTotal = max(1, totalTime)
             let displayTime = dragTime ?? currentTime
-            let progressRatio = CGFloat(displayTime / validTotal)
-            let bufferRatio = isFullyGenerated ? 1.0 : CGFloat(generatedDuration / validTotal)
-            let barHeight: CGFloat = 3
-            
-            ZStack(alignment: .topLeading) {
-                // Background Track
-                Rectangle()
+            let progressRatio = CGFloat(max(0, min(1, displayTime / validTotal)))
+            let bufferRatio = isFullyGenerated ? 1 : CGFloat(max(0, min(1, generatedDuration / validTotal)))
+            ZStack(alignment: .leading) {
+                Capsule()
                     .fill(Color.secondary.opacity(0.3))
-                    .frame(height: barHeight)
-                    .clipShape(Capsule())
-                
-                // Buffer Track
-                Rectangle()
+                    .frame(height: 3)
+                Capsule()
                     .fill(Color.secondary.opacity(0.6))
-                    .frame(width: max(0, geometry.size.width * min(1.0, bufferRatio)), height: barHeight)
-                    .clipShape(Capsule())
-                
-                // Active Progress
-                Rectangle()
+                    .frame(width: geometry.size.width * bufferRatio, height: 3)
+                Capsule()
                     .fill(DesignSystem.accent)
-                    .frame(width: max(0, geometry.size.width * min(1.0, progressRatio)), height: barHeight)
-                    .clipShape(Capsule())
-                
-                // Playhead Thumb (only visible when dragging for a cleaner look)
-                if isDragging {
-                    Circle()
-                        .fill(DesignSystem.accent)
-                        .shadow(radius: 2)
-                        .frame(width: 12, height: 12)
-                        .offset(x: max(0, geometry.size.width * min(1.0, progressRatio) - 6), y: -4.5)
-                }
+                    .frame(width: geometry.size.width * progressRatio, height: 3)
+                Circle()
+                    .fill(DesignSystem.accent)
+                    .frame(width: 10, height: 10)
+                    .offset(x: max(0, min(geometry.size.width - 10, geometry.size.width * progressRatio - 5)))
             }
-            .frame(height: 44, alignment: .top) // 44px height for visual bounds
-            .overlay(alignment: .top) {
-                Color.clear
-                    .contentShape(Rectangle()) // Capture touches in the transparent area
-                    .frame(height: 24) // Restrict height to the top padding so it doesn't block buttons!
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { value in
-                                isDragging = true
-                                // Direct mapping across the full width
-                                let fraction = max(0, min(1, value.location.x / geometry.size.width))
-                                let targetTime = fraction * validTotal
-                                dragTime = targetTime
-                            }
-                            .onEnded { _ in
-                                isDragging = false
-                                if let finalTime = dragTime {
-                                    onSeek(finalTime)
-                                }
-                                dragTime = nil
-                            }
-                    )
-            }
+            .frame(height: 44)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        onInteraction()
+                        let fraction = max(0, min(1, value.location.x / max(1, geometry.size.width)))
+                        dragTime = fraction * totalTime
+                    }
+                    .onEnded { _ in
+                        onInteraction()
+                        if let dragTime { onSeek(dragTime) }
+                        dragTime = nil
+                    }
+            )
         }
         .frame(height: 44)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Playback Position")
+        .accessibilityValue("\(positionLabel(currentTime)) of \(isFullyGenerated ? "" : "approximately ")\(positionLabel(totalTime))")
+        .accessibilityAdjustableAction { direction in
+            let target: TimeInterval
+            switch direction {
+            case .increment: target = min(totalTime, currentTime + 15)
+            case .decrement: target = max(0, currentTime - 15)
+            @unknown default: return
+            }
+            onInteraction()
+            onSeek(target)
+        }
+        .accessibilityHint("Adjusts playback by 15 seconds")
     }
 }
 
@@ -468,7 +477,7 @@ struct VoiceSelectionSheetView: View {
             VoiceSettingsView(document: document, playbackEngine: playbackEngine)
         }
         .presentationBackground(.ultraThinMaterial)
-        .presentationBackgroundInteraction(.enabled(upThrough: .large))
+        .presentationBackgroundInteraction(.disabled)
     }
 }
 
@@ -480,8 +489,16 @@ struct SpinnerState {
 
 struct SpinnerOverlay: View {
     let isGenerating: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     
     var body: some View {
+        if reduceMotion {
+            Circle()
+                .stroke(DesignSystem.accent.opacity(0.6), lineWidth: 3)
+                .frame(width: 60, height: 60)
+                .opacity(isGenerating ? 1 : 0)
+                .accessibilityHidden(true)
+        } else {
         KeyframeAnimator(
             initialValue: SpinnerState(),
             repeating: isGenerating
@@ -512,6 +529,28 @@ struct SpinnerOverlay: View {
         }
         .opacity(isGenerating ? 1 : 0)
         .animation(.easeInOut(duration: 0.2), value: isGenerating)
+        .accessibilityHidden(true)
+        }
     }
 }
 
+
+private extension DynamicTypeSize {
+    var uiContentSizeCategory: UIContentSizeCategory {
+        switch self {
+        case .xSmall: return .extraSmall
+        case .small: return .small
+        case .medium: return .medium
+        case .large: return .large
+        case .xLarge: return .extraLarge
+        case .xxLarge: return .extraExtraLarge
+        case .xxxLarge: return .extraExtraExtraLarge
+        case .accessibility1: return .accessibilityMedium
+        case .accessibility2: return .accessibilityLarge
+        case .accessibility3: return .accessibilityExtraLarge
+        case .accessibility4: return .accessibilityExtraExtraLarge
+        case .accessibility5: return .accessibilityExtraExtraExtraLarge
+        @unknown default: return .large
+        }
+    }
+}
