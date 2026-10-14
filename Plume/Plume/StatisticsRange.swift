@@ -28,6 +28,11 @@ struct StatisticsRange: Sendable {
     let days: Int
     let bucket: Calendar.Component
     nonisolated func contains(_ date: Date) -> Bool { date >= start && date <= end }
+    nonisolated func chartDomain(calendar: Calendar = .current) -> ClosedRange<Date> {
+        let first = calendar.dateInterval(of: bucket, for: start)?.start ?? start
+        let last = calendar.dateInterval(of: bucket, for: end)?.end ?? end
+        return first...max(first, last)
+    }
     nonisolated func bucketDates(calendar: Calendar = .current) -> [Date] {
         var dates: [Date] = []
         var date = calendar.dateInterval(of: bucket, for: start)?.start ?? start

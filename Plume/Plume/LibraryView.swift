@@ -26,6 +26,7 @@ struct LibraryView: View {
     @ObservedObject private var playbackEngine = AudioPlaybackEngine.shared
     
     
+    @State private var deletionError: String?
     @State private var searchText = ""
     @State private var isSearchVisible = false
     @State private var filterSelection: LibraryFilter = .all
@@ -198,6 +199,9 @@ struct LibraryView: View {
                     .accessibilityLabel("Settings")
                 }
             }
+            .alert("Deletion Incomplete", isPresented: Binding(get: { deletionError != nil }, set: { if !$0 { deletionError = nil } })) {
+                Button("OK") { deletionError = nil }
+            } message: { Text(deletionError ?? "") }
             .onAppear {
                 autoPurge()
                 checkSharedItems()
@@ -229,32 +233,18 @@ struct LibraryView: View {
         if let deletedDocs = try? modelContext.fetch(descriptor) {
             let now = Date()
             
-            var urlsToDelete: [URL] = []
-            var docsToDelete: [Document] = []
-            
-            for doc in deletedDocs {
-                if let deletedAt = doc.deletedAt {
-                    if let days = Calendar.current.dateComponents([.day], from: deletedAt, to: now).day, days >= 30 {
-                        // Hard delete
-                        if let audioURL = doc.audioFileURL {
-                            urlsToDelete.append(audioURL)
-                        }
-                        docsToDelete.append(doc)
-                    }
-                }
+            let expired = deletedDocs.filter { document in
+                guard let deletedAt = document.deletedAt else { return false }
+                return (Calendar.current.dateComponents([.day], from: deletedAt, to: now).day ?? 0) >= 30
             }
-            
-            // Delete files in background
-            Task.detached {
-                let fileManager = FileManager.default
-                for url in urlsToDelete {
-                    try? fileManager.removeItem(at: url)
+            guard !expired.isEmpty else { return }
+            Task {
+                let result = await DocumentDeletion.permanentlyDelete(expired, context: modelContext)
+                do { try modelContext.save() }
+                catch { deletionError = error.localizedDescription }
+                if result.failedEntries > 0 {
+                    deletionError = "Expired chapters were removed, but some cached audio could not be deleted. Clear Unused Cached Audio can retry."
                 }
-            }
-            
-            // Delete models on main thread
-            for doc in docsToDelete {
-                modelContext.delete(doc)
             }
         }
     }

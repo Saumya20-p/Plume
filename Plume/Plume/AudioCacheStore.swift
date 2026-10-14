@@ -14,9 +14,10 @@ final class AudioCacheStore {
     let root: URL
     private var writers: [UUID: UUID] = [:]
     private var deleting: Set<UUID> = []
+    private var pendingRemovalNames: Set<String> = []
     private var waiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
 
-    init(root: URL) { self.root = root }
+    init(root: URL) { self.root = root.resolvingSymlinksInPath() }
 
     func beginWriting(documentID: UUID) throws -> UUID {
         guard !deleting.contains(documentID) else { throw CancellationError() }
@@ -54,7 +55,10 @@ final class AudioCacheStore {
         var quarantined: [(URL, Int64)] = []
         let quarantine = root.appendingPathComponent(".quarantine", isDirectory: true)
         if documentID == nil {
-            quarantined = entries(at: quarantine).map { ($0, Self.bytes(at: $0)) }
+            for entry in entries(at: quarantine) {
+                if pendingRemovalNames.contains(entry.lastPathComponent) { result.retainedBytes += Self.bytes(at: entry) }
+                else { quarantined.append((entry, Self.bytes(at: entry))) }
+            }
         }
         for entry in entries(at: root) where entry.lastPathComponent != ".quarantine" {
             let bytes = Self.bytes(at: entry)
@@ -71,6 +75,7 @@ final class AudioCacheStore {
                 result.failedEntries += 1
             }
         }
+        pendingRemovalNames.formUnion(quarantined.map { $0.0.lastPathComponent })
         return QuarantinedClear(result: result, entries: quarantined)
     }
 
@@ -79,7 +84,8 @@ final class AudioCacheStore {
     }
 
     func removeQuarantined(_ pending: QuarantinedClear) async -> CacheClearResult {
-        await Task.detached {
+        defer { pendingRemovalNames.subtract(pending.entries.map { $0.0.lastPathComponent }) }
+        return await Task.detached {
             var result = pending.result
             for (url, bytes) in pending.entries {
                 do {

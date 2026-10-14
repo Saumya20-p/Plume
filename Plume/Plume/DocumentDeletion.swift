@@ -3,7 +3,12 @@ import SwiftData
 
 @MainActor
 enum DocumentDeletion {
+    private static var deletingIDs: Set<UUID> = []
     static func permanentlyDelete(_ documents: [Document], context: ModelContext) async -> CacheClearResult {
+        let documents = documents.filter { !deletingIDs.contains($0.id) }
+        let ids = Set(documents.map(\.id))
+        deletingIDs.formUnion(ids)
+        defer { deletingIDs.subtract(ids) }
         let cache = AudioCacheStore.shared
         for document in documents {
             cache.blockNewWriters(for: document.id)

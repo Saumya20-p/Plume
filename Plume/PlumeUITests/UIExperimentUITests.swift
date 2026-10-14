@@ -51,6 +51,21 @@ final class UIExperimentUITests: XCTestCase {
         capture("speed-landscape", app: app)
     }
 
+    @MainActor func testLargeTextSheetReachability() throws {
+        let app = launch(reader: true, extra: ["--ui-experiment-large-text"])
+        XCTAssertTrue(app.buttons["Reading Appearance"].waitForExistence(timeout: 5))
+        capture("reader-largest-text", app: app)
+        app.buttons["Reading Appearance"].tap()
+        for _ in 0..<4 where !app.switches["Bold Font"].isHittable { app.swipeUp() }
+        XCTAssertTrue(app.switches["Bold Font"].isHittable)
+        capture("appearance-largest-text", app: app)
+        app.buttons["Done"].tap()
+        app.buttons["Reading Speed"].tap()
+        for _ in 0..<4 where !app.switches.firstMatch.isHittable { app.swipeUp() }
+        XCTAssertTrue(app.switches.firstMatch.isHittable)
+        capture("speed-largest-text", app: app)
+    }
+
     @MainActor func testFolderManualImportAndCrossFolderSearch() throws {
         let app = launch()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Experiment Book")).firstMatch.waitForExistence(timeout: 5))

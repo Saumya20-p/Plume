@@ -44,6 +44,9 @@ struct PlumeApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                #if DEBUG
+                .modifier(UIExperimentEnvironment())
+                #endif
                 .onAppear {
                     PlaybackCoordinator.shared.configure(container: sharedModelContainer)
                     #if DEBUG

@@ -1,6 +1,7 @@
 #if DEBUG
 import Foundation
 import SwiftData
+import SwiftUI
 
 /// Opt-in, in-memory content for reproducible UI checks. No production store
 /// is read or edited when this launch argument is present.
@@ -26,6 +27,13 @@ enum UIExperimentFixture {
             PlaybackProgress.shared.currentWord = WordTimestamp(word: "The", startTime: 0, endTime: 1, rangeLocation: 13, rangeLength: 3)
             engine.presentedPlayerDocument = document
         }
+    }
+}
+struct UIExperimentEnvironment: ViewModifier {
+    func body(content: Content) -> some View {
+        if UIExperimentFixture.enabled && ProcessInfo.processInfo.arguments.contains("--ui-experiment-large-text") {
+            content.environment(\.dynamicTypeSize, .accessibility5).environment(\.legibilityWeight, .bold)
+        } else { content }
     }
 }
 #endif

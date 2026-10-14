@@ -72,6 +72,8 @@ struct ListeningStatisticsView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             
+            Text("\(range.start.formatted(date: .abbreviated, time: .omitted)) – \(range.end.formatted(date: .abbreviated, time: .omitted))")
+                .font(.caption).foregroundStyle(.secondary)
             Text(formatDuration(total))
                 .font(.system(size: 40, weight: .bold, design: .rounded))
                 .tracking(-1)
@@ -107,7 +109,7 @@ struct ListeningStatisticsView: View {
                     .accessibilityValue(formatDuration(item.value))
                 }
             }
-            .chartXScale(domain: range.start...range.end)
+            .chartXScale(domain: range.chartDomain())
             .frame(height: 200)
             .padding(.horizontal)
         }
@@ -132,7 +134,7 @@ struct ListeningStatisticsView: View {
                     .accessibilityValue("\(Int(item.value)) words")
                 }
             }
-            .chartXScale(domain: range.start...range.end)
+            .chartXScale(domain: range.chartDomain())
             .frame(height: 200)
             .padding(.horizontal)
         }

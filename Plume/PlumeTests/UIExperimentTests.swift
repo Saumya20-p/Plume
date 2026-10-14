@@ -44,6 +44,23 @@ struct UIExperimentTests {
         store.finishWriting(token)
     }
 
+    @Test @MainActor func concurrentClearDoesNotDeleteTheSameQuarantineTwice() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data(repeating: 1, count: 30).write(to: root.appendingPathComponent(UUID().uuidString + ".m4a"))
+        let store = AudioCacheStore(root: root)
+        let first = store.quarantineUnused(currentDocumentID: nil)
+        let second = store.quarantineUnused(currentDocumentID: nil)
+        #expect(first.entries.count == 1)
+        #expect(second.entries.isEmpty)
+        #expect(second.result.retainedBytes == 30)
+        let a = await store.removeQuarantined(first)
+        let b = await store.removeQuarantined(second)
+        #expect(a.clearedBytes == 30)
+        #expect(a.failedEntries + b.failedEntries == 0)
+    }
+
     @Test @MainActor func permanentDeletionBlocksNewWriters() async throws {
         let store = AudioCacheStore(root: FileManager.default.temporaryDirectory)
         let id = UUID(), first = try store.beginWriting(documentID: id), second = try store.beginWriting(documentID: id)
@@ -67,6 +84,9 @@ struct UIExperimentTests {
         #expect(month.days == 29)
         #expect(month.bucketDates(calendar: calendar).count == 29)
         #expect(!month.contains(now.addingTimeInterval(1)))
+        let year = StatsTimeframe.year.range(now: now, calendar: calendar)
+        #expect(year.chartDomain(calendar: calendar).lowerBound == year.bucketDates(calendar: calendar).first)
+        #expect(year.chartDomain(calendar: calendar).upperBound > year.end)
         #expect(StatsTimeframe.year.title == "Last Year")
         #expect(ListeningDurationFormat.string(0) == "0 min")
         #expect(ListeningDurationFormat.string(1) == "<1 min")
