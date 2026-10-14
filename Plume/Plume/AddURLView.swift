@@ -35,6 +35,7 @@ struct AddURLView: View {
                             onFailedExtraction(url, fallbackTitle, fallbackBody)
                             dismiss()
                         }
+                        .disabled((try? validatedImportURL(pastedURL)) == nil)
                     } header: { Text("Import Failed") }
                 }
             }

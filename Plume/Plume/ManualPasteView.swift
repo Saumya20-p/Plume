@@ -6,21 +6,23 @@ struct ManualPasteView: View {
 
     @State private var title: String
     @State private var bodyText: String
+    @State private var errorMessage: String?
     
     let destinationName: String
 
-    init(title: String, bodyText: String, destinationName: String = "Library", onSave: @escaping (String, String) -> Void) {
+    init(title: String, bodyText: String, destinationName: String = "Library", onSave: @escaping (String, String) throws -> Void) {
         _title = State(initialValue: title)
         _bodyText = State(initialValue: bodyText)
         self.destinationName = destinationName
         self.onSave = onSave
     }
 
-    var onSave: (String, String) -> Void
+    var onSave: (String, String) throws -> Void
     
     var body: some View {
         NavigationStack {
             Form {
+                if let errorMessage { Section { Text(errorMessage).foregroundStyle(.secondary) } }
                 Section(header: Text("Chapter Title")) {
                     TextField("Title", text: $title)
                 }
@@ -41,10 +43,13 @@ struct ManualPasteView: View {
                 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        onSave(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Untitled Chapter" : title, bodyText.trimmingCharacters(in: .whitespacesAndNewlines))
-                        dismiss()
+                        do {
+                            let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                            try onSave(trimmedTitle.isEmpty ? "Untitled Chapter" : trimmedTitle, bodyText.trimmingCharacters(in: .whitespacesAndNewlines))
+                            dismiss()
+                        } catch { errorMessage = error.localizedDescription }
                     }
-                    .disabled(bodyText.trimmingCharacters(in: .whitespacesAndNewlines).count < 20)
+                    .disabled(bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }

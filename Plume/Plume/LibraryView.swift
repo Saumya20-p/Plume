@@ -3,6 +3,14 @@ import SwiftData
 
 struct LibraryView: View {
     var onAdd: (Folder?) -> Void = { _ in }
+    var onManualImport: (URL?, String, String) -> Void = { _, _, _ in }
+    @State private var sharedImportsInFlight: Set<URL> = []
+    @State private var showingSharedImportError = false
+    @State private var sharedImportError = ""
+    @State private var failedSharedFile: URL?
+    @State private var failedSharedURL: URL?
+    @State private var failedSharedTitle = ""
+    @State private var failedSharedBody = ""
     @Environment(\.modelContext) private var modelContext
     // Sort pinned items first, then by dateAdded
     @Query(filter: #Predicate<Document> { $0.deletedAt == nil },
@@ -210,6 +218,14 @@ struct LibraryView: View {
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
                 checkSharedItems()
             }
+            .alert("Shared Import Failed", isPresented: $showingSharedImportError) {
+                Button("Retry") { checkSharedItems() }
+                Button("Paste Text Manually") {
+                    if let file = failedSharedFile { try? FileManager.default.removeItem(at: file) }
+                    onManualImport(failedSharedURL, failedSharedTitle, failedSharedBody)
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: { Text(sharedImportError) }
             .alert("New Folder", isPresented: $showingCreateFolder) {
                 TextField("Folder Name", text: $newFolderName)
                 Button("Cancel", role: .cancel) { newFolderName = "" }
@@ -269,62 +285,57 @@ struct LibraryView: View {
         guard let files = try? FileManager.default.contentsOfDirectory(at: container, includingPropertiesForKeys: nil) else { return }
         let sharedFiles = files.filter { $0.lastPathComponent.hasPrefix("shared_") && $0.pathExtension == "json" }
         
-        for fileURL in sharedFiles {
+        for fileURL in sharedFiles where !sharedImportsInFlight.contains(fileURL) {
             guard let data = try? Data(contentsOf: fileURL),
                   let item = try? JSONDecoder().decode(SharedItem.self, from: data) else {
                 try? FileManager.default.removeItem(at: fileURL)
+                sharedImportError = "The shared item couldn't be read. Share it again or paste its text."
+                showingSharedImportError = true
                 continue
             }
-            
-            // Remove temp file immediately so we don't import it twice
-            try? FileManager.default.removeItem(at: fileURL)
-            
+            sharedImportsInFlight.insert(fileURL)
             let itemURL = item.url
             let itemHTML = item.html
-            
-            Task {
+            Task { @MainActor in
+                defer { sharedImportsInFlight.remove(fileURL) }
                 var title = "Shared Web Article"
-                var bodyText = ""
-                var coverImageURL: URL? = nil
-                
-                if let html = itemHTML, !html.isEmpty {
-                    let extracted = ContentExtractor.extract(html: html, sourceURL: URL(string: itemURL))
+                var body = ""
+                do {
+                    let url = try validatedImportURL(itemURL)
+                    let html: String
+                    if let itemHTML, !itemHTML.isEmpty { html = itemHTML }
+                    else { html = try await WebViewFetcher.shared.fetchHTML(from: url) }
+                    try Task.checkCancellation()
+                    let extracted = ContentExtractor.extract(html: html, sourceURL: url)
                     title = extracted.title
-                    bodyText = extracted.body
-                    coverImageURL = extracted.coverImageURL
-                } else if let url = URL(string: itemURL) {
-                    if let html = try? await WebViewFetcher.shared.fetchHTML(from: url) {
-                        let extracted = ContentExtractor.extract(html: html, sourceURL: url)
-                        title = extracted.title
-                        bodyText = extracted.body
-                        coverImageURL = extracted.coverImageURL
+                    body = extracted.body
+                    guard !extracted.failed, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        throw ImportFailure.extractionFailed
                     }
-                }
-                
-
-                if !bodyText.isEmpty {
-                    let doc = Document(
-                        title: title,
-                        sourceURL: URL(string: itemURL),
-                        bodyText: bodyText,
-                        extractionFailed: false,
-                        wordCount: bodyText.split(separator: " ").count
-                    )
-                    let artworkURL = coverImageURL
+                    // Shared items explicitly belong to Library, independent of navigation.
+                    let doc = Document(title: title, sourceURL: url, bodyText: body,
+                                       wordCount: body.split(whereSeparator: \.isWhitespace).count)
+                    modelContext.insert(doc)
+                    do { try modelContext.save() } catch { modelContext.delete(doc); throw error }
+                    try? FileManager.default.removeItem(at: fileURL)
+                    PlaybackQueueManager.shared.enqueue(doc.id)
                     Task { @MainActor in
-                        guard let data = await fetchImportArtwork(artworkURL), doc.deletedAt == nil else { return }
+                        guard let data = await fetchImportArtwork(extracted.coverImageURL), doc.deletedAt == nil else { return }
                         doc.coverImageData = data
                     }
-                    modelContext.insert(doc)
-                    PlaybackQueueManager.shared.enqueue(doc.id)
                     if let defaults = UserDefaults(suiteName: AppGroup.identifier),
-                       let autoOpenURL = defaults.string(forKey: "autoOpenLatestSharedURL"),
-                       autoOpenURL == itemURL {
+                       defaults.string(forKey: "autoOpenLatestSharedURL") == itemURL {
                         defaults.removeObject(forKey: "autoOpenLatestSharedURL")
-                        await MainActor.run {
-                            playbackEngine.presentedPlayerDocument = doc
-                        }
+                        playbackEngine.presentedPlayerDocument = doc
                     }
+                } catch is CancellationError {
+                } catch {
+                    failedSharedFile = fileURL
+                    failedSharedURL = URL(string: itemURL)
+                    failedSharedTitle = title
+                    failedSharedBody = body
+                    sharedImportError = error.localizedDescription + " This item is still available to retry."
+                    showingSharedImportError = true
                 }
             }
         }

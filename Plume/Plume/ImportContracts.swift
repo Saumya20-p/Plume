@@ -39,7 +39,7 @@ nonisolated func validatedImportURL(_ text: String) throws -> URL {
 }
 
 /// Serializes timeout, cancellation, navigation and JavaScript completions.
-@MainActor final class ImportCompletionGate<Value> {
+@MainActor final class ImportCompletionGate<Value: Sendable> {
     private var continuation: CheckedContinuation<Value, Error>?
     init(_ continuation: CheckedContinuation<Value, Error>) { self.continuation = continuation }
     @discardableResult func finish(_ result: Result<Value, Error>) -> Bool {

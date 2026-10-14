@@ -31,6 +31,12 @@ struct MainTabView: View {
         LibraryView(onAdd: { folder in
             importDestination = ImportDestination(folderID: folder?.id, name: folder?.name ?? "Library")
             showAddSheet = true
+        }, onManualImport: { url, title, body in
+            importDestination = ImportDestination()
+            failedURL = url
+            failedTitle = title
+            failedBody = body
+            showingManualPaste = true
         })
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !playbackEngine.isPlayerViewPresented, let doc = playbackEngine.currentDocument {
@@ -97,20 +103,13 @@ struct MainTabView: View {
                 bodyText: failedBody,
                 destinationName: importDestination.name,
                 onSave: { newTitle, newBody in
-                    let wordCount = newBody.split(separator: .init(" ")).count
-                    
-                    do {
-                        let folder = try importDestination.folder(in: modelContext)
-                        let doc = Document(title: newTitle, sourceURL: failedURL,
-                                           bodyText: newBody, wordCount: wordCount)
-                        doc.folder = folder
-                        modelContext.insert(doc)
-                        do { try modelContext.save() } catch { modelContext.delete(doc); throw error }
-                        PlaybackQueueManager.shared.enqueue(doc.id)
-                    } catch {
-                        importErrorMessage = error.localizedDescription
-                        showingImportError = true
-                    }
+                    let folder = try importDestination.folder(in: modelContext)
+                    let doc = Document(title: newTitle, sourceURL: failedURL, bodyText: newBody,
+                                       wordCount: newBody.split(whereSeparator: \.isWhitespace).count)
+                    doc.folder = folder
+                    modelContext.insert(doc)
+                    do { try modelContext.save() } catch { modelContext.delete(doc); throw error }
+                    PlaybackQueueManager.shared.enqueue(doc.id)
                 }
             )
         }
@@ -144,7 +143,9 @@ struct MainTabView: View {
             }
         }
         .alert("Import Failed", isPresented: $showingImportError) {
-            Button("OK", role: .cancel) { }
+            Button("Choose File Again") { showingFileImporter = true }
+            Button("Paste Text Manually") { failedURL = nil; failedBody = ""; showingManualPaste = true }
+            Button("Cancel", role: .cancel) { }
         } message: {
             Text(importErrorMessage)
         }
@@ -172,6 +173,7 @@ struct MainTabView: View {
                 }
                 if let error = copyError ?? coordinationError { throw error }
                 let title = url.deletingPathExtension().lastPathComponent
+                failedTitle = title
                 isImportingFile = true
                 fileImportTask = Task { @MainActor in
                     defer {

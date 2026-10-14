@@ -43,13 +43,14 @@ struct EPUBParser {
         let fileManager = FileManager.default
         let tempDir = fileManager.temporaryDirectory.appendingPathComponent("epub_\(UUID().uuidString)")
         
+        defer { try? fileManager.removeItem(at: tempDir) }
         do {
             try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true, attributes: nil)
             try fileManager.unzipItem(at: epubURL, to: tempDir)
         } catch {
             throw EPUBParserError.unzipFailed
         }
-        defer { try? fileManager.removeItem(at: tempDir) }
+        try Task.checkCancellation()
         
         // 2. Parse META-INF/container.xml to find the .opf path
         let containerURL = tempDir.appendingPathComponent("META-INF/container.xml")
