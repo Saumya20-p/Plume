@@ -81,6 +81,9 @@ struct PlayerView: View, Equatable {
                 )
             }
             .environment(\.colorScheme, colorScheme)
+            .environment(\.dynamicTypeSize, dynamicTypeSize)
+            .environment(\.accessibilityReduceMotion, reduceMotion)
+            .environment(\.legibilityWeight, legibilityWeight)
         )
         .ignoresSafeArea(edges: .bottom)
         .navigationTitle(document.title)
