@@ -2,21 +2,14 @@ import SwiftUI
 import SwiftData
 import Charts
 
-enum StatsTimeframe: String, CaseIterable, Identifiable {
-    case week = "W"
-    case month = "M"
-    case sixMonths = "6M"
-    case year = "Y"
-    
-    var id: String { self.rawValue }
-}
-
 struct ListeningStatisticsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \ListeningSession.date, order: .forward) private var sessions: [ListeningSession]
     
     @State private var selectedTimeframe: StatsTimeframe = .week
     @State private var showResetAlert = false
+    @State private var referenceDate = Date()
+    private var range: StatisticsRange { selectedTimeframe.range(now: referenceDate) }
     
     var body: some View {
         ScrollView {
@@ -25,7 +18,7 @@ struct ListeningStatisticsView: View {
                 
                 Picker("Timeframe", selection: $selectedTimeframe) {
                     ForEach(StatsTimeframe.allCases) { timeframe in
-                        Text(timeframe.rawValue).tag(timeframe)
+                        Text(timeframe.rawValue).tag(timeframe).accessibilityLabel(timeframe.title)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -50,6 +43,7 @@ struct ListeningStatisticsView: View {
             }
             .padding(.vertical)
         }
+        .onAppear { referenceDate = Date() }
         .navigationTitle("Listening Stats")
         .navigationBarTitleDisplayMode(.inline)
         .alert("Reset Statistics?", isPresented: $showResetAlert) {
@@ -74,7 +68,7 @@ struct ListeningStatisticsView: View {
         let (total, average) = calculateRecentSummary()
         
         return VStack(spacing: 8) {
-            Text("This \(selectedTimeframe == .week ? "Week" : "Month")")
+            Text(selectedTimeframe.title)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             
@@ -96,7 +90,7 @@ struct ListeningStatisticsView: View {
     // MARK: - Charts
     private var timeChart: some View {
         VStack(alignment: .leading) {
-            Text("Time Listened")
+            Text("Time Listened · \(formatDuration(calculateRecentSummary().total))")
                 .font(.headline)
                 .padding(.horizontal)
             
@@ -105,12 +99,15 @@ struct ListeningStatisticsView: View {
                 ForEach(data, id: \.date) { item in
                     BarMark(
                         x: .value("Date", item.date, unit: unit(for: selectedTimeframe)),
-                        y: .value("Hours", item.value / 3600.0)
+                        y: .value("Minutes", item.value / 60.0)
                     )
                     .foregroundStyle(DesignSystem.accent.gradient)
                     .cornerRadius(8)
+                    .accessibilityLabel(item.date.formatted(date: .abbreviated, time: .omitted))
+                    .accessibilityValue(formatDuration(item.value))
                 }
             }
+            .chartXScale(domain: range.start...range.end)
             .frame(height: 200)
             .padding(.horizontal)
         }
@@ -131,8 +128,11 @@ struct ListeningStatisticsView: View {
                     )
                     .foregroundStyle(Color.orange.gradient)
                     .cornerRadius(8)
+                    .accessibilityLabel(item.date.formatted(date: .abbreviated, time: .omitted))
+                    .accessibilityValue("\(Int(item.value)) words")
                 }
             }
+            .chartXScale(domain: range.start...range.end)
             .frame(height: 200)
             .padding(.horizontal)
         }
@@ -188,132 +188,30 @@ struct ListeningStatisticsView: View {
     
     // MARK: - Helpers
     private func calculateRecentSummary() -> (total: Double, average: Double) {
-        let calendar = Calendar.current
-        let now = Date()
-        let startDate: Date
-        let days: Int
-        
-        switch selectedTimeframe {
-        case .week:
-            startDate = calendar.date(byAdding: .day, value: -7, to: now) ?? now
-            days = 7
-        case .month:
-            startDate = calendar.date(byAdding: .month, value: -1, to: now) ?? now
-            days = 30
-        case .sixMonths:
-            startDate = calendar.date(byAdding: .month, value: -6, to: now) ?? now
-            days = 180
-        case .year:
-            startDate = calendar.date(byAdding: .year, value: -1, to: now) ?? now
-            days = 365
-        }
-        
-        let recentSessions = sessions.filter { $0.date >= startDate }
-        let total = recentSessions.reduce(0) { $0 + $1.secondsListened }
-        let average = total / Double(days)
-        
-        return (total, average)
+        let total = sessions.filter { range.contains($0.date) }.reduce(0) { $0 + $1.secondsListened }
+        return (total, total / Double(range.days))
     }
-    
-    private func unit(for timeframe: StatsTimeframe) -> Calendar.Component {
-        switch timeframe {
-        case .week, .month: return .day
-        case .sixMonths, .year: return .month
-        }
-    }
-    
-    struct AggregatedData {
-        let date: Date
-        let value: Double
-    }
-    
+
+    private func unit(for timeframe: StatsTimeframe) -> Calendar.Component { timeframe.bucket }
+    struct AggregatedData { let date: Date; let value: Double }
+
     private func aggregateData(by timeframe: StatsTimeframe, value keyPath: KeyPath<ListeningSession, Double>) -> [AggregatedData] {
-        let calendar = Calendar.current
-        let now = Date()
-        let startDate: Date
-        
-        switch timeframe {
-        case .week:
-            startDate = calendar.date(byAdding: .day, value: -7, to: now) ?? now
-        case .month:
-            startDate = calendar.date(byAdding: .month, value: -1, to: now) ?? now
-        case .sixMonths:
-            startDate = calendar.date(byAdding: .month, value: -6, to: now) ?? now
-        case .year:
-            startDate = calendar.date(byAdding: .year, value: -1, to: now) ?? now
-        }
-        
-        let relevantSessions = sessions.filter { $0.date >= startDate }
-        
-        let component: Calendar.Component = (timeframe == .week || timeframe == .month) ? .day : .month
-        
-        var grouped = [Date: Double]()
-        for session in relevantSessions {
-            let startOfPeriod = calendar.dateInterval(of: component, for: session.date)?.start ?? session.date
-            grouped[startOfPeriod, default: 0] += session[keyPath: keyPath]
-        }
-        
-        // Fill in missing dates with 0
-        var result = [AggregatedData]()
-        var currentDate = calendar.dateInterval(of: component, for: startDate)?.start ?? startDate
-        let endDate = calendar.dateInterval(of: component, for: now)?.start ?? now
-        
-        while currentDate <= endDate {
-            result.append(AggregatedData(date: currentDate, value: grouped[currentDate] ?? 0))
-            currentDate = calendar.date(byAdding: component, value: 1, to: currentDate) ?? currentDate
-        }
-        
-        return result
+        aggregateData { $0[keyPath: keyPath] }
     }
-    
     private func aggregateData(by timeframe: StatsTimeframe, value keyPath: KeyPath<ListeningSession, Int>) -> [AggregatedData] {
+        aggregateData { Double($0[keyPath: keyPath]) }
+    }
+    private func aggregateData(value: (ListeningSession) -> Double) -> [AggregatedData] {
         let calendar = Calendar.current
-        let now = Date()
-        let startDate: Date
-        
-        switch timeframe {
-        case .week:
-            startDate = calendar.date(byAdding: .day, value: -7, to: now) ?? now
-        case .month:
-            startDate = calendar.date(byAdding: .month, value: -1, to: now) ?? now
-        case .sixMonths:
-            startDate = calendar.date(byAdding: .month, value: -6, to: now) ?? now
-        case .year:
-            startDate = calendar.date(byAdding: .year, value: -1, to: now) ?? now
+        var grouped: [Date: Double] = [:]
+        for session in sessions where range.contains(session.date) {
+            let date = calendar.dateInterval(of: range.bucket, for: session.date)?.start ?? session.date
+            grouped[date, default: 0] += value(session)
         }
-        
-        let relevantSessions = sessions.filter { $0.date >= startDate }
-        
-        let component: Calendar.Component = (timeframe == .week || timeframe == .month) ? .day : .month
-        
-        var grouped = [Date: Double]()
-        for session in relevantSessions {
-            let startOfPeriod = calendar.dateInterval(of: component, for: session.date)?.start ?? session.date
-            grouped[startOfPeriod, default: 0] += Double(session[keyPath: keyPath])
-        }
-        
-        var result = [AggregatedData]()
-        var currentDate = calendar.dateInterval(of: component, for: startDate)?.start ?? startDate
-        let endDate = calendar.dateInterval(of: component, for: now)?.start ?? now
-        
-        while currentDate <= endDate {
-            result.append(AggregatedData(date: currentDate, value: grouped[currentDate] ?? 0))
-            currentDate = calendar.date(byAdding: component, value: 1, to: currentDate) ?? currentDate
-        }
-        
-        return result
+        return range.bucketDates(calendar: calendar).map { AggregatedData(date: $0, value: grouped[$0] ?? 0) }
     }
-    
-    private func formatDuration(_ seconds: Double) -> String {
-        let hours = Int(seconds) / 3600
-        let minutes = (Int(seconds) % 3600) / 60
-        if hours > 0 {
-            return "\(hours)h \(minutes)m"
-        } else {
-            return "\(minutes)m"
-        }
-    }
-    
+    private func formatDuration(_ seconds: Double) -> String { ListeningDurationFormat.string(seconds) }
+
     private func formatNumber(_ number: Int) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal

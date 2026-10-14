@@ -272,7 +272,7 @@ struct VoiceSettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Restarting will stop active playback and reload the document from your current reading position using your new voice snapshot.")
+            Text("Playback restarts from your current reading position with the selected voice.")
         }
     }
     
@@ -281,7 +281,7 @@ struct VoiceSettingsView: View {
     @ViewBuilder
     private var primaryVoiceSection: some View {
         // Active session notice
-        if let currentDoc = activeDocument {
+        if activeDocument != nil {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .top, spacing: 8) {
@@ -291,7 +291,7 @@ struct VoiceSettingsView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Playback in Progress")
                                 .font(.subheadline.weight(.semibold))
-                            Text("“\(currentDoc.title)” is using its original voice snapshot. Preference changes automatically apply to your next document.")
+                            Text("This chapter keeps its current voice. Your selection applies to the next chapter.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -302,7 +302,7 @@ struct VoiceSettingsView: View {
                     } label: {
                         HStack {
                             Image(systemName: "arrow.clockwise")
-                            Text("Restart Current Document with New Voice")
+                            Text("Restart with Selected Voice")
                         }
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(DesignSystem.accent)
@@ -364,10 +364,11 @@ struct VoiceSettingsView: View {
     private var fallbackVoiceSection: some View {
         Section(
             header: Text("Fallback Behavior"),
-            footer: Text("If the primary voice is unavailable, fails, or cannot generate in the background, Plume seamlessly switches to your fallback voice. Only Enhanced and Premium Apple voices are eligible.")
+            footer: Text("Used when your main voice can’t continue. Choose an Enhanced or Premium Apple voice.")
         ) {
             // System Default / Automatic
-            HStack {
+            Button { selectFallback(nil) } label: {
+              HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("System Default (Automatic)")
                         .font(.body)
@@ -382,10 +383,10 @@ struct VoiceSettingsView: View {
                         .accessibilityLabel("Selected")
                 }
             }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                selectFallback(nil)
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Select system default fallback voice")
+            .accessibilityAddTraits(preferences.fallbackAppleVoiceIdentifier == nil ? .isSelected : [])
         }
         
         // Unavailable Fallback Warning
@@ -423,93 +424,51 @@ struct VoiceSettingsView: View {
     // MARK: - Row Views
     
     private func kokoroVoiceRow(voice: Voice, categoryName: String) -> some View {
-        let isSelected: Bool = {
-            if case .kokoro(let id) = preferences.primary {
-                return id == voice.id
-            }
-            return false
-        }()
-        
+        let selected = preferences.primary == .kokoro(identifier: voice.id)
         return HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(voice.name)
-                        .font(.body)
-                    Text("Neural")
-                        .font(.system(size: 10, weight: .medium))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.blue.opacity(0.12))
-                        .foregroundStyle(.blue)
-                        .clipShape(Capsule())
+            Button { selectPrimary(.kokoro(identifier: voice.id)) } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(voice.name).font(.body)
+                        Text("\(voice.gender) • \(categoryName)").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if selected { Image(systemName: "checkmark").foregroundStyle(DesignSystem.accent).accessibilityHidden(true) }
                 }
-                Text("\(voice.gender) • \(categoryName)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+                .frame(minHeight: 44)
             }
-            
-            Spacer()
-            
+            .buttonStyle(.plain)
+            .accessibilityLabel("Select \(voice.name) as primary voice")
+            .accessibilityAddTraits(selected ? .isSelected : [])
             previewButton(for: .kokoro(identifier: voice.id), voiceName: voice.name)
-            
-            if isSelected {
-                Image(systemName: "checkmark")
-                    .foregroundStyle(DesignSystem.accent)
-                    .padding(.leading, 4)
-                    .accessibilityLabel("Selected as Primary Voice")
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            selectPrimary(.kokoro(identifier: voice.id))
         }
     }
-    
     private func appleVoiceRow(descriptor: AppleSpeechVoiceDescriptor, isPrimary: Bool) -> some View {
-        let isSelected: Bool = {
-            if isPrimary {
-                if case .apple(let id) = preferences.primary {
-                    return id == descriptor.id
-                }
-                return false
-            } else {
-                return preferences.fallbackAppleVoiceIdentifier == descriptor.id
-            }
-        }()
-        
+        let selected = isPrimary ? preferences.primary == .apple(identifier: descriptor.id) : preferences.fallbackAppleVoiceIdentifier == descriptor.id
         return HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(descriptor.name)
-                        .font(.body)
-                    qualityBadge(for: descriptor.quality)
+            Button {
+                if isPrimary { selectPrimary(.apple(identifier: descriptor.id)) }
+                else { selectFallback(descriptor.id) }
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack { Text(descriptor.name).font(.body); qualityBadge(for: descriptor.quality) }
+                        Text(appleVoiceSubtitle(for: descriptor)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if selected { Image(systemName: "checkmark").foregroundStyle(DesignSystem.accent).accessibilityHidden(true) }
                 }
-                Text(appleVoiceSubtitle(for: descriptor))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+                .frame(minHeight: 44)
             }
-            
-            Spacer()
-            
+            .buttonStyle(.plain)
+            .accessibilityLabel("Select \(descriptor.name) as \(isPrimary ? "primary" : "fallback") voice")
+            .accessibilityAddTraits(selected ? .isSelected : [])
             previewButton(for: .apple(identifier: descriptor.id), voiceName: descriptor.name)
-            
-            if isSelected {
-                Image(systemName: "checkmark")
-                    .foregroundStyle(DesignSystem.accent)
-                    .padding(.leading, 4)
-                    .accessibilityLabel(isPrimary ? "Selected as Primary Voice" : "Selected as Fallback Voice")
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if isPrimary {
-                selectPrimary(.apple(identifier: descriptor.id))
-            } else {
-                selectFallback(descriptor.id)
-            }
         }
     }
-    
+
     private func previewButton(for voiceID: PlaybackVoiceID, voiceName: String) -> some View {
         let isPreviewing = previewController.previewingVoiceID == voiceID.identifier
         let isGenerating = isPreviewing && previewController.isGeneratingPreview
@@ -541,6 +500,7 @@ struct VoiceSettingsView: View {
             }
         }
         .buttonStyle(.plain)
+        .frame(minWidth: 44, minHeight: 44)
         .accessibilityLabel(isPreviewing ? "Stop preview for \(voiceName)" : "Preview \(voiceName)")
     }
     

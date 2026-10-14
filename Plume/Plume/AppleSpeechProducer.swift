@@ -399,6 +399,8 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
               ) else {
             return
         }
+        activeCursor = localRange.location
+        activeRequestID = requestID
         onWillSpeak?(registered.request.callback, globalRange)
         delegate?.producerWillSpeak(self, callback: registered.request.callback, globalRange: globalRange)
         yieldProducerEvent(.willSpeak(registered.request.callback, globalRange))
@@ -456,14 +458,6 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
               characterRange.length >= 0,
               characterRange.location <= Int.max - characterRange.length else {
             return
-        }
-        
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            self.activeCursor = characterRange.location
-            if let req = self.requests.first(where: { $0.value.utterance === utterance }) {
-                self.activeRequestID = req.key
-            }
         }
         
         eventBridge.yield(

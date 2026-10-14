@@ -24,7 +24,9 @@ let package = Package(
                 "PlaybackSessionContract.swift",
                 "AppleSpeechVoiceCatalog.swift",
                 "AudioProducerProtocol.swift",
-                "AppleSpeechProducer.swift"
+                "AppleSpeechProducer.swift",
+                "AudioCacheStore.swift",
+                "StatisticsRange.swift"
             ]
         ),
         .testTarget(
@@ -35,7 +37,8 @@ let package = Package(
             sources: [
                 "PlaybackVoiceFoundationTests.swift",
                 "PlaybackSessionContractTests.swift",
-                "AppleSpeechProducerTests.swift"
+                "AppleSpeechProducerTests.swift",
+                "UIExperimentTests.swift"
             ]
         )
     ]
