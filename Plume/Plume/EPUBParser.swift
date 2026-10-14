@@ -22,13 +22,13 @@ enum EPUBParserError: Error, LocalizedError {
     }
 }
 
-struct EPUBChapter {
+struct EPUBChapter: Sendable {
     let title: String
     let bodyText: String
     let wordCount: Int
 }
 
-struct EPUBBook {
+struct EPUBBook: Sendable {
     let title: String
     let author: String?
     let chapters: [EPUBChapter]
@@ -38,7 +38,8 @@ struct EPUBBook {
 struct EPUBParser {
     
     /// Parse an EPUB file at the given URL and return structured book data.
-    static func parse(epubURL: URL, fallbackTitle: String = "Untitled Book") throws -> EPUBBook {
+    nonisolated static func parse(epubURL: URL, fallbackTitle: String = "Untitled Book") throws -> EPUBBook {
+        try Task.checkCancellation()
         let fileManager = FileManager.default
         let tempDir = fileManager.temporaryDirectory.appendingPathComponent("epub_\(UUID().uuidString)")
         
@@ -82,6 +83,7 @@ struct EPUBParser {
         var chapterIndex = 1
         
         for idref in packageInfo.spineIDs {
+            try Task.checkCancellation()
             guard let href = packageInfo.manifest[idref] else { continue }
             let decodedHref = href.removingPercentEncoding ?? href
             let chapterURL = opfDir.appendingPathComponent(decodedHref)
@@ -116,7 +118,7 @@ struct EPUBParser {
     
     // MARK: - Parse container.xml
     
-    private static func parseContainer(xml: String) throws -> String {
+    nonisolated private static func parseContainer(xml: String) throws -> String {
         let doc = try SwiftSoup.parse(xml, "", Parser.xmlParser())
         guard let rootfile = try doc.select("rootfile").first(),
               let fullPath = try? rootfile.attr("full-path"),
@@ -136,7 +138,7 @@ struct EPUBParser {
         let coverHref: String?
     }
     
-    private static func parseOPF(xml: String, fallbackTitle: String) throws -> PackageInfo {
+    nonisolated private static func parseOPF(xml: String, fallbackTitle: String) throws -> PackageInfo {
         let doc = try SwiftSoup.parse(xml, "", Parser.xmlParser())
         
         // Extract metadata
@@ -206,7 +208,7 @@ struct EPUBParser {
     
     // MARK: - Extract Chapter Text
     
-    private static func extractChapterText(xhtml: String) -> (title: String?, bodyText: String) {
+    nonisolated private static func extractChapterText(xhtml: String) -> (title: String?, bodyText: String) {
         guard let doc = try? SwiftSoup.parse(xhtml) else {
             return (nil, "")
         }

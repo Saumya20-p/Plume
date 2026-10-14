@@ -1,17 +1,11 @@
 import SwiftUI
 import SwiftData
 
-enum LibraryFilter: String, CaseIterable, Identifiable {
-    case all = "All"
-    case inProgress = "In Progress"
-    case finished = "Finished"
-    var id: String { rawValue }
-}
-
 struct LibraryView: View {
+    var onAdd: (Folder?) -> Void = { _ in }
     @Environment(\.modelContext) private var modelContext
     // Sort pinned items first, then by dateAdded
-    @Query(filter: #Predicate<Document> { $0.deletedAt == nil && $0.folder == nil },
+    @Query(filter: #Predicate<Document> { $0.deletedAt == nil },
            sort: [SortDescriptor(\Document.isPinned, order: .reverse),
                   SortDescriptor(\Document.dateAdded, order: .reverse)] as [SortDescriptor<Document>])
     private var documents: [Document]
@@ -30,17 +24,31 @@ struct LibraryView: View {
     @State private var filterSelection: LibraryFilter = .all
     
     private var filteredDocuments: [Document] {
-        let searched = searchText.isEmpty ? documents : documents.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
-        switch filterSelection {
-        case .all: return searched
-        case .inProgress: return searched.filter { $0.progress > 0 && $0.progress < 0.99 }
-        case .finished: return searched.filter { $0.progress >= 0.99 }
+        documents.filter {
+            LibrarySearchScope.matches(title: $0.title, progress: $0.progress, folderID: $0.folder?.id,
+                                       deleted: $0.deletedAt != nil, query: searchText, filter: filterSelection)
         }
     }
-    
+
     private var filteredFolders: [Folder] {
-        if searchText.isEmpty { return folders }
-        return folders.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return folders.filter { folder in
+            let active = folder.documents.filter { $0.deletedAt == nil }
+            let matchesFilter = filterSelection == .all || active.contains { filterSelection.matches(progress: $0.progress) }
+            return matchesFilter && (query.isEmpty || folder.name.localizedCaseInsensitiveContains(query))
+        }
+    }
+
+    private var emptyTitle: String {
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "No search results" }
+        if filterSelection != .all { return "No \(filterSelection.rawValue.lowercased()) chapters" }
+        return "No chapters yet"
+    }
+
+    private var emptyMessage: String {
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Search checks chapters in Library and every folder." }
+        if filterSelection != .all { return "Choose All to see your chapters." }
+        return "Tap Add to import a chapter."
     }
     
     var body: some View {
@@ -53,6 +61,8 @@ struct LibraryView: View {
                         .tracking(-0.5)
                     Spacer()
                     HStack(spacing: 20) {
+                        Button { onAdd(nil) } label: { Image(systemName: "plus") }
+                            .accessibilityLabel("Add to Library")
                         Button {
                             showingCreateFolder = true
                         } label: {
@@ -83,7 +93,7 @@ struct LibraryView: View {
                     HStack {
                         Image(systemName: "magnifyingglass")
                             .foregroundColor(.secondary)
-                        TextField("Search...", text: $searchText)
+                        TextField("Search all chapters", text: $searchText)
                             .submitLabel(.search)
                         if !searchText.isEmpty {
                             Button {
@@ -100,8 +110,8 @@ struct LibraryView: View {
                     .padding(.horizontal)
                     .padding(.bottom, 16)
                     .transition(.move(edge: .top).combined(with: .opacity))
-                } else {
-                    Picker("Filter", selection: $filterSelection) {
+                }
+                Picker("Filter", selection: $filterSelection) {
                         ForEach(LibraryFilter.allCases) { filter in
                             Text(filter.rawValue).tag(filter)
                         }
@@ -109,8 +119,6 @@ struct LibraryView: View {
                     .pickerStyle(.segmented)
                     .padding(.horizontal)
                     .padding(.bottom, 16)
-                }
-                
                 
                 if filteredDocuments.isEmpty && filteredFolders.isEmpty {
                     Spacer()
@@ -118,18 +126,21 @@ struct LibraryView: View {
                         Image(systemName: "books.vertical")
                             .font(.system(size: 48))
                             .foregroundStyle(.tertiary)
-                        Text("No chapters yet")
+                        Text(emptyTitle)
                             .font(.title3.weight(.semibold))
-                        Text("Tap + to add a chapter")
+                        Text(emptyMessage)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                        if filterSelection != .all || !searchText.isEmpty {
+                            Button("Clear Search and Filters") { searchText = ""; filterSelection = .all }
+                        }
                     }
                     Spacer()
                 } else {
                     List {
                         if !filteredFolders.isEmpty {
                             ForEach(filteredFolders) { folder in
-                                NavigationLink(destination: FolderDetailView(folder: folder)) {
+                                NavigationLink(destination: FolderDetailView(folder: folder, onAdd: { onAdd(folder) })) {
                                     HStack(alignment: .center, spacing: 16) {
                                         if let data = folder.coverImageData, let uiImage = UIImage(data: data) {
                                             Image(uiImage: uiImage)
@@ -151,9 +162,9 @@ struct LibraryView: View {
                                         VStack(alignment: .leading, spacing: 4) {
                                             Text(folder.name)
                                                 .font(.body.weight(.semibold))
-                                                .lineLimit(1)
+                                                .lineLimit(2)
                                             
-                                            Text("\(folder.documents.count) items")
+                                            Text("\(folder.documents.filter { $0.deletedAt == nil }.count) chapters")
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
                                                 .lineLimit(1)
@@ -203,8 +214,8 @@ struct LibraryView: View {
                 TextField("Folder Name", text: $newFolderName)
                 Button("Cancel", role: .cancel) { newFolderName = "" }
                 Button("Create") {
-                    let folder = Folder(name: newFolderName)
-                    modelContext.insert(folder)
+                    let trimmed = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty { modelContext.insert(Folder(name: trimmed)) }
                     newFolderName = ""
                 }
             }
@@ -212,6 +223,7 @@ struct LibraryView: View {
     }
     
     private func softDelete(_ doc: Document) {
+        PlaybackQueueManager.shared.remove(documentID: doc.id)
         doc.deletedAt = Date()
         doc.isPinned = false // unpin upon deletion so it doesn't float when restored
     }
@@ -289,24 +301,7 @@ struct LibraryView: View {
                     }
                 }
                 
-                var coverImageData: Data? = nil
-                if let imageURL = coverImageURL {
-                    var request = URLRequest(url: imageURL)
-                    request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-                    request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8", forHTTPHeaderField: "Accept")
-                    
-                    let config = URLSessionConfiguration.default
-                    config.waitsForConnectivity = true
-                    config.allowsExpensiveNetworkAccess = false
-                    let session = URLSession(configuration: config)
-                    
-                    if let (data, response) = try? await session.data(for: request),
-                       let httpResponse = response as? HTTPURLResponse,
-                       httpResponse.statusCode == 200 {
-                        coverImageData = data
-                    }
-                }
-                
+
                 if !bodyText.isEmpty {
                     let doc = Document(
                         title: title,
@@ -315,7 +310,11 @@ struct LibraryView: View {
                         extractionFailed: false,
                         wordCount: bodyText.split(separator: " ").count
                     )
-                    doc.coverImageData = coverImageData
+                    let artworkURL = coverImageURL
+                    Task { @MainActor in
+                        guard let data = await fetchImportArtwork(artworkURL), doc.deletedAt == nil else { return }
+                        doc.coverImageData = data
+                    }
                     modelContext.insert(doc)
                     PlaybackQueueManager.shared.enqueue(doc.id)
                     if let defaults = UserDefaults(suiteName: AppGroup.identifier),
@@ -365,7 +364,7 @@ struct LibraryRowView: View {
                     HStack {
                         Text(doc.title)
                             .font(.body.weight(.semibold))
-                            .lineLimit(1)
+                            .lineLimit(2)
                         if doc.isPinned {
                             Image(systemName: "pin.fill")
                                 .font(.caption2)
@@ -373,6 +372,10 @@ struct LibraryRowView: View {
                         }
                     }
                     
+                    if let folder = doc.folder {
+                        Label(folder.name, systemImage: "folder")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                     HStack(spacing: 4) {
                         Text("\(Int(doc.progress * 100))%")
                         Text("•")
@@ -471,7 +474,7 @@ struct LibraryRowView: View {
     
     private func sourceDomain(for doc: Document) -> String {
         guard let url = doc.sourceURL, let host = url.host else {
-            return "web"
+            return "Imported text"
         }
         let cleanHost = host.replacingOccurrences(of: "www.", with: "")
         return cleanHost

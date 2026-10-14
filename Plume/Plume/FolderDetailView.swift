@@ -5,6 +5,7 @@ struct FolderDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var playbackEngine = AudioPlaybackEngine.shared
     let folder: Folder
+    var onAdd: () -> Void = {}
     
     @Query(sort: \Folder.dateAdded, order: .reverse)
     private var allFolders: [Folder]
@@ -27,7 +28,7 @@ struct FolderDetailView: View {
                         .foregroundStyle(.tertiary)
                     Text("Folder is empty")
                         .font(.title3.weight(.semibold))
-                    Text("Tap + to add a chapter")
+                    Text("Tap Add to import into this folder")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -40,6 +41,7 @@ struct FolderDetailView: View {
                             playbackEngine.presentedPlayerDocument = doc
                         } label: {
                             LibraryRowView(doc: doc, allFolders: allFolders, onSoftDelete: { d in
+                                PlaybackQueueManager.shared.remove(documentID: d.id)
                                 d.deletedAt = Date()
                                 d.isPinned = false
                             })
@@ -53,6 +55,10 @@ struct FolderDetailView: View {
         .navigationTitle(folder.name)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                Button("Add", systemImage: "plus", action: onAdd)
+                    .accessibilityLabel("Add to \(folder.name)")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
                         newFolderName = folder.name
@@ -63,6 +69,7 @@ struct FolderDetailView: View {
                     Button(role: .destructive) {
                         if UserDefaults.standard.bool(forKey: "deleteFolderContents") {
                             for doc in folder.documents {
+                                PlaybackQueueManager.shared.remove(documentID: doc.id)
                                 doc.deletedAt = Date()
                                 doc.isPinned = false
                             }
