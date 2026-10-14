@@ -49,3 +49,50 @@ nonisolated func validatedImportURL(_ text: String) throws -> URL {
         return true
     }
 }
+
+/// The worker owns any temporary resources until it actually exits. The caller
+/// can return immediately on cancellation or deadline without waiting for CPU work.
+@MainActor func awaitImportWorker<Value: Sendable>(
+    _ worker: Task<Value, Error>, deadline: ContinuousClock.Instant
+) async throws -> Value {
+    let operation = ImportDeadlineOperation(worker: worker)
+    return try await operation.run(deadline: deadline)
+}
+
+@MainActor private final class ImportDeadlineOperation<Value: Sendable> {
+    private let worker: Task<Value, Error>
+    private var gate: ImportCompletionGate<Value>?
+    private var observer: Task<Void, Never>?
+    private var timer: Task<Void, Never>?
+
+    init(worker: Task<Value, Error>) { self.worker = worker }
+
+    func run(deadline: ContinuousClock.Instant) async throws -> Value {
+        guard !Task.isCancelled else { worker.cancel(); throw CancellationError() }
+        guard ContinuousClock.now < deadline else { worker.cancel(); throw URLError(.timedOut) }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                gate = ImportCompletionGate(continuation)
+                observer = Task { [weak self, worker] in
+                    let result = await worker.result
+                    self?.finish(result)
+                }
+                timer = Task { [weak self] in
+                    do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
+                    self?.finish(.failure(URLError(.timedOut)))
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in self.finish(.failure(CancellationError())) }
+        }
+    }
+
+    private func finish(_ result: Result<Value, Error>) {
+        guard let gate else { return }
+        self.gate = nil
+        worker.cancel()
+        observer?.cancel()
+        timer?.cancel()
+        gate.finish(result)
+    }
+}

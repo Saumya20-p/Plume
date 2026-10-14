@@ -32,8 +32,8 @@ struct MainTabView: View {
         LibraryView(onAdd: { folder in
             importDestination = ImportDestination(folderID: folder?.id, name: folder?.name ?? "Library")
             showAddSheet = true
-        }, onManualImport: { url, title, body in
-            importDestination = ImportDestination()
+        }, onManualImport: { destination, url, title, body in
+            importDestination = destination
             failedURL = url
             failedTitle = title
             failedBody = body
@@ -106,11 +106,23 @@ struct MainTabView: View {
                 destinationName: importDestination.name,
                 onSave: { newTitle, newBody in
                     let folder = try importDestination.folder(in: modelContext)
-                    let doc = Document(title: newTitle, sourceURL: failedURL, bodyText: newBody,
-                                       wordCount: newBody.split(whereSeparator: \.isWhitespace).count)
+                    let existingFailure = try modelContext.fetch(FetchDescriptor<Document>()).first {
+                        failedURL != nil && $0.sourceURL == failedURL && $0.extractionFailed
+                            && $0.deletedAt == nil && $0.folder?.id == importDestination.folderID
+                    }
+                    let doc = existingFailure ?? Document(title: newTitle, sourceURL: failedURL, bodyText: newBody)
+                    let previous = (doc.title, doc.bodyText, doc.wordCount, doc.extractionFailed)
+                    doc.title = newTitle
+                    doc.bodyText = newBody
+                    doc.wordCount = newBody.split(whereSeparator: \.isWhitespace).count
+                    doc.extractionFailed = false
                     doc.folder = folder
-                    modelContext.insert(doc)
-                    do { try modelContext.save() } catch { modelContext.delete(doc); throw error }
+                    if existingFailure == nil { modelContext.insert(doc) }
+                    do { try modelContext.save() } catch {
+                        if existingFailure == nil { modelContext.delete(doc) }
+                        else { (doc.title, doc.bodyText, doc.wordCount, doc.extractionFailed) = previous }
+                        throw error
+                    }
                     PlaybackQueueManager.shared.enqueue(doc.id)
                 }
             )
@@ -182,13 +194,13 @@ struct MainTabView: View {
                 fileImportTask = Task { @MainActor in
                     defer {
                         isImportingFile = false
-                        try? FileManager.default.removeItem(at: copy)
                     }
-                    let parser = Task.detached { try ImportFileContent.parse(url: copy, fallbackTitle: title) }
+                    let parser = Task.detached {
+                        defer { try? FileManager.default.removeItem(at: copy) }
+                        return try ImportFileContent.parse(url: copy, fallbackTitle: title)
+                    }
                     do {
-                        let content = try await withTaskCancellationHandler {
-                            try await parser.value
-                        } onCancel: { parser.cancel() }
+                        let content = try await awaitImportWorker(parser, deadline: ContinuousClock.now.advanced(by: .seconds(30)))
                         try Task.checkCancellation()
                         let destinationFolder = try destination.folder(in: modelContext)
                         let folder = destinationFolder ?? (destination.createsBookFolder(isEPUB: content.isBook) ? Folder(name: content.title) : nil)

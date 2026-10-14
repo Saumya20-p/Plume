@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import Testing
 @testable import Plume
 
@@ -77,4 +78,60 @@ struct ImportLibraryContractTests {
                                            deleted: false, query: "chapter", filter: .finished))
         #expect(!LibraryFilter.inProgress.matches(progress: 0))
     }
+
+    @MainActor @Test func expiredDeadlineCancelsWorkerWithoutWaitingForItsResult() async {
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let worker = Task.detached { try blockedCPUWork(release) }
+        do {
+            _ = try await awaitImportWorker(worker, deadline: ContinuousClock.now)
+            Issue.record("Expired deadline should throw")
+        } catch {
+            #expect((error as? URLError)?.code == .timedOut)
+            #expect(worker.isCancelled)
+        }
+    }
+
+    @MainActor @Test func deadlineReturnsWhileCPUWorkerIsStillBlocked() async {
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let worker = Task.detached { try blockedCPUWork(release) }
+        do {
+            _ = try await awaitImportWorker(worker, deadline: ContinuousClock.now.advanced(by: .milliseconds(10)))
+            Issue.record("Deadline should throw before the worker is released")
+        } catch {
+            #expect((error as? URLError)?.code == .timedOut)
+            #expect(worker.isCancelled)
+        }
+    }
+
+    @MainActor @Test func cancellationReturnsWithoutWaitingForCPUWorker() async {
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let started = AsyncStream<Void>.makeStream()
+        let worker = Task.detached {
+            started.continuation.yield(())
+            return try blockedCPUWork(release)
+        }
+        let importing = Task {
+            try await awaitImportWorker(worker, deadline: ContinuousClock.now.advanced(by: .seconds(30)))
+        }
+        for await _ in started.stream { break }
+        importing.cancel()
+        do {
+            _ = try await importing.value
+            Issue.record("Cancellation should throw before the worker is released")
+        } catch {
+            #expect(error is CancellationError)
+            #expect(worker.isCancelled)
+        }
+        started.continuation.finish()
+    }
+
+}
+
+// Models a synchronous parser that cannot immediately observe task cancellation.
+nonisolated private func blockedCPUWork(_ release: DispatchSemaphore) throws -> String {
+    release.wait()
+    return "late chapter"
 }

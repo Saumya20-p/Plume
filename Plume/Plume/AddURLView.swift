@@ -66,9 +66,17 @@ struct AddURLView: View {
         importTask = Task { @MainActor in
             defer { isExtracting = false }
             do {
+                let deadline = ContinuousClock.now.advanced(by: .seconds(30))
                 let html = try await WebViewFetcher.shared.fetchHTML(from: url)
                 try Task.checkCancellation()
-                let result = ContentExtractor.extract(html: html, sourceURL: url)
+                let extraction = Task.detached {
+                    try Task.checkCancellation()
+                    let result = ContentExtractor.extract(html: html, sourceURL: url)
+                    try Task.checkCancellation()
+                    return result
+                }
+                let result = try await awaitImportWorker(extraction, deadline: deadline)
+                try Task.checkCancellation()
                 fallbackTitle = result.title
                 fallbackBody = result.body
                 guard !result.failed, !result.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

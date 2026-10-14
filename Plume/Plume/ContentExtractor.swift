@@ -3,7 +3,10 @@ import SwiftSoup
 
 public struct ContentExtractor {
     
-    public static func extract(html: String, sourceURL: URL?) -> (title: String, body: String, failed: Bool, coverImageURL: URL?) {
+    nonisolated public static func extract(html: String, sourceURL: URL?) -> (title: String, body: String, failed: Bool, coverImageURL: URL?) {
+        guard !Task.isCancelled, html.utf8.count <= 10_000_000 else {
+            return ("Unknown Chapter", "", true, nil)
+        }
         guard let doc = try? SwiftSoup.parse(html) else {
             return ("Unknown Chapter", "", true, nil)
         }
@@ -21,6 +24,7 @@ public struct ContentExtractor {
         if coverImageURL == nil {
             if let imgs = try? doc.select("img") {
                 for img in imgs {
+                    if Task.isCancelled { return ("Unknown Chapter", "", true, nil) }
                     let src = (try? img.attr("src")) ?? ""
                     let className = (try? img.attr("class"))?.lowercased() ?? ""
                     let alt = (try? img.attr("alt"))?.lowercased() ?? ""
@@ -59,6 +63,7 @@ public struct ContentExtractor {
         ]
         
         for selector in noiseSelectors {
+            if Task.isCancelled { return ("Unknown Chapter", "", true, nil) }
             _ = try? doc.select(selector).remove()
         }
         
@@ -84,6 +89,7 @@ public struct ContentExtractor {
         
         if let candidates = try? cleanDoc.select("article, div, main, section") {
             for el in candidates {
+                if Task.isCancelled { return (title, "", true, coverImageURL) }
                 let text = try? el.text()
                 let textLength = Double(text?.count ?? 0)
                 if textLength < 100 { continue }
@@ -110,6 +116,7 @@ public struct ContentExtractor {
         var bodyText = ""
         if let paragraphs = try? contentNode.select("p") {
             for p in paragraphs {
+                if Task.isCancelled { return (title, "", true, coverImageURL) }
                 let text = try? p.text().trimmingCharacters(in: .whitespacesAndNewlines)
                 if let t = text, !t.isEmpty {
                     bodyText += t + "\n\n"

@@ -3,7 +3,7 @@ import SwiftData
 
 struct LibraryView: View {
     var onAdd: (Folder?) -> Void = { _ in }
-    var onManualImport: (URL?, String, String) -> Void = { _, _, _ in }
+    var onManualImport: (ImportDestination, URL?, String, String) -> Void = { _, _, _, _ in }
     @State private var sharedImportsInFlight: Set<URL> = []
     @State private var showingSharedImportError = false
     @State private var sharedImportError = ""
@@ -11,6 +11,7 @@ struct LibraryView: View {
     @State private var failedSharedURL: URL?
     @State private var failedSharedTitle = ""
     @State private var failedSharedBody = ""
+    @State private var failedSharedDestination = ImportDestination()
     @Environment(\.modelContext) private var modelContext
     // Sort pinned items first, then by dateAdded
     @Query(filter: #Predicate<Document> { $0.deletedAt == nil },
@@ -208,7 +209,7 @@ struct LibraryView: View {
                 Button("Retry") { checkSharedItems() }
                 Button("Paste Text Manually") {
                     if let file = failedSharedFile { try? FileManager.default.removeItem(at: file) }
-                    onManualImport(failedSharedURL, failedSharedTitle, failedSharedBody)
+                    onManualImport(failedSharedDestination, failedSharedURL, failedSharedTitle, failedSharedBody)
                 }
                 Button("Cancel", role: .cancel) { }
             } message: { Text(sharedImportError) }
@@ -267,6 +268,7 @@ struct LibraryView: View {
             guard let data = try? Data(contentsOf: fileURL),
                   let item = try? JSONDecoder().decode(SharedItem.self, from: data) else {
                 try? FileManager.default.removeItem(at: fileURL)
+                failedSharedDestination = ImportDestination()
                 failedSharedFile = nil
                 failedSharedURL = nil
                 failedSharedTitle = ""
@@ -283,12 +285,20 @@ struct LibraryView: View {
                 var title = "Shared Web Article"
                 var body = ""
                 do {
+                    let deadline = ContinuousClock.now.advanced(by: .seconds(30))
                     let url = try validatedImportURL(itemURL)
                     let html: String
                     if let itemHTML, !itemHTML.isEmpty { html = itemHTML }
                     else { html = try await WebViewFetcher.shared.fetchHTML(from: url) }
                     try Task.checkCancellation()
-                    let extracted = ContentExtractor.extract(html: html, sourceURL: url)
+                    let extraction = Task.detached {
+                        try Task.checkCancellation()
+                        let result = ContentExtractor.extract(html: html, sourceURL: url)
+                        try Task.checkCancellation()
+                        return result
+                    }
+                    let extracted = try await awaitImportWorker(extraction, deadline: deadline)
+                    try Task.checkCancellation()
                     title = extracted.title
                     body = extracted.body
                     guard !extracted.failed, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -312,6 +322,11 @@ struct LibraryView: View {
                     }
                 } catch is CancellationError {
                 } catch {
+                    let existingFailure = documents.first {
+                        $0.deletedAt == nil && $0.extractionFailed && $0.sourceURL == URL(string: itemURL)
+                    }
+                    failedSharedDestination = ImportDestination(folderID: existingFailure?.folder?.id,
+                                                                name: existingFailure?.folder?.name ?? "Library")
                     failedSharedFile = fileURL
                     failedSharedURL = URL(string: itemURL)
                     failedSharedTitle = title
