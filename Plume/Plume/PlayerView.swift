@@ -176,6 +176,12 @@ struct PlayerControlsView: View {
     var onDismiss: () -> Void
     @State private var showSpeedSheet = false
     @State private var showVoiceSheet = false
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+    private var isGeneratingAudio: Bool {
+        !playbackEngine.isAppleActive && generationManager.generatingDocumentIDs.contains(document.id) &&
+            playbackEngine.chunks.isEmpty && document.audioFileURL == nil
+    }
 
     private func formatTime(_ time: TimeInterval) -> String {
         let min = Int(time) / 60
@@ -185,78 +191,46 @@ struct PlayerControlsView: View {
     
     var body: some View {
         VStack(spacing: 4) {
-            LiveEdgeScrubber(
-                currentTime: $progress.currentTime,
-                generatedDuration: playbackEngine.duration,
-                estimatedDuration: document.estimatedDuration,
-                isFullyGenerated: document.audioFileURL != nil,
-                onInteraction: onInteraction,
-                onSeek: { playbackEngine.seek(to: $0) }
-            )
-            // Top Row
-            HStack {
-                Button {
-                    onInteraction()
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    showQueueSheet = true
-                } label: {
-                    Image(systemName: "list.bullet")
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
+            if verticalSizeClass == .compact {
+                HStack(spacing: 16) {
+                    playbackTime
+                    timeline
                 }
-                .buttonStyle(ScaleButtonStyle())
-                .accessibilityLabel("Up Next")
-                
-                Spacer()
-                
-                VStack(alignment: .center, spacing: 2) {
-                    let speed = Double(playbackEngine.playbackRate)
-                    let isFullyGenerated = document.audioFileURL != nil
-                    let currentTimeStr = formatTime(progress.currentTime / speed)
-                    let totalTimeStr = isFullyGenerated ? formatTime(playbackEngine.duration / speed) : "~\(formatTime(document.estimatedDuration / speed))"
-                    
-                    Text("\(currentTimeStr) / \(totalTimeStr)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+            } else {
+                timeline
+                HStack {
+                    queueButton
+                    Spacer()
+                    playbackTime
+                    Spacer()
+                    stopButton
                 }
-                
-                Spacer()
-                
-                Button {
-                    onInteraction()
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    playbackEngine.pause()
-                    if generationManager.generatingDocumentIDs.contains(document.id) {
-                        generationManager.cancelCurrentGeneration()
-                    }
-                    onDismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(ScaleButtonStyle())
-                .accessibilityLabel("Stop Playback and Close Player")
             }
-            
+
             // Bottom Row
             HStack(spacing: 0) {
+                if verticalSizeClass == .compact {
+                    queueButton
+                    Spacer()
+                }
                 // Speed Button
                 Button(action: {
                     onInteraction()
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onSheetPresentationChanged(true)
                     showSpeedSheet = true
                 }) {
                     Text(String(format: "%.1fx", playbackEngine.playbackRate))
                         .font(.caption.bold())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
                         .foregroundStyle(.primary)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(ScaleButtonStyle())
                 .accessibilityLabel("Reading Speed")
+                .accessibilityValue(String(format: "%.1f times", playbackEngine.playbackRate))
                 
                 Spacer()
                 
@@ -323,7 +297,7 @@ struct PlayerControlsView: View {
                         )
                 }
                 .buttonStyle(ScaleButtonStyle())
-                .accessibilityLabel(playbackEngine.isPlaying ? "Pause Playback" : "Play")
+                .accessibilityLabel(isGeneratingAudio ? "Cancel Audio Generation" : playbackEngine.isPlaying ? "Pause Playback" : "Play")
                 
                 Spacer()
                 
@@ -347,6 +321,7 @@ struct PlayerControlsView: View {
                 Button(action: {
                     onInteraction()
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onSheetPresentationChanged(true)
                     showVoiceSheet = true
                 }) {
                     Image(systemName: "person.wave.2.fill")
@@ -357,6 +332,10 @@ struct PlayerControlsView: View {
                 }
                 .buttonStyle(ScaleButtonStyle())
                 .accessibilityLabel("Choose Voice")
+                if verticalSizeClass == .compact {
+                    Spacer()
+                    stopButton
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -381,6 +360,64 @@ struct PlayerControlsView: View {
             VoiceSelectionSheetView(document: document, playbackEngine: playbackEngine)
         }
     }
+
+    private var timeline: some View {
+        LiveEdgeScrubber(
+            currentTime: $progress.currentTime,
+            generatedDuration: playbackEngine.duration,
+            estimatedDuration: document.estimatedDuration,
+            isFullyGenerated: document.audioFileURL != nil,
+            onInteraction: onInteraction,
+            onSeek: { playbackEngine.seek(to: $0) }
+        )
+    }
+
+    private var playbackTime: some View {
+        let speed = Double(playbackEngine.playbackRate)
+        let current = formatTime(progress.currentTime / speed)
+        let total = document.audioFileURL != nil ? formatTime(playbackEngine.duration / speed) : "~\(formatTime(document.estimatedDuration / speed))"
+        return Text("\(current) / \(total)")
+            .font(.caption2.monospacedDigit())
+            .multilineTextAlignment(.center)
+            .foregroundStyle(.secondary)
+    }
+
+    private var queueButton: some View {
+        Button {
+            onInteraction()
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            showQueueSheet = true
+        } label: {
+            Image(systemName: "list.bullet")
+                .font(.body)
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(ScaleButtonStyle())
+        .accessibilityLabel("Up Next")
+    }
+
+    private var stopButton: some View {
+        Button {
+            onInteraction()
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            playbackEngine.pause()
+            if generationManager.generatingDocumentIDs.contains(document.id) {
+                generationManager.cancelCurrentGeneration()
+            }
+            playbackEngine.clearMemory()
+            playbackEngine.currentDocument = nil
+            onDismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(ScaleButtonStyle())
+        .accessibilityLabel("Stop Playback and Close Player")
+    }
+
 }
 
 struct ScaleButtonStyle: ButtonStyle {

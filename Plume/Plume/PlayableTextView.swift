@@ -28,6 +28,11 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         controller.loadViewIfNeeded()
         controller.textView.delegate = context.coordinator
         context.coordinator.textView = controller.textView
+        controller.onReaderLayout = { [weak coordinator = context.coordinator] in
+            guard let coordinator, !coordinator.follow.isBrowsing,
+                  coordinator.parent.canAutoResume || coordinator.lastScrolledWordCharIndex == -1 else { return }
+            coordinator.scrollToCurrentWord(force: false)
+        }
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         controller.textView.addGestureRecognizer(tap)
         return controller
@@ -75,14 +80,19 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         }
         coordinator.scheduleResume()
 
-        var newWordRange: NSRange?
-        var newParagraphRange: NSRange?
-        if let word = currentWord, let location = word.rangeLocation, let length = word.rangeLength,
-           location >= 0, length >= 0, location <= textView.textStorage.length,
-           length <= textView.textStorage.length - location {
-            let range = NSRange(location: location, length: length)
-            newWordRange = range
-            newParagraphRange = (text as NSString).paragraphRange(for: range)
+        var newWordRange = coordinator.lastWordRange
+        var newParagraphRange = coordinator.lastParagraphRange
+        if rebuilt || coordinator.lastCurrentWord != currentWord {
+            newWordRange = nil
+            newParagraphRange = nil
+            if let word = currentWord, let location = word.rangeLocation, let length = word.rangeLength,
+               location >= 0, length >= 0, location <= textView.textStorage.length,
+               length <= textView.textStorage.length - location {
+                let range = NSRange(location: location, length: length)
+                newWordRange = range
+                newParagraphRange = (text as NSString).paragraphRange(for: range)
+            }
+            coordinator.lastCurrentWord = currentWord
         }
         if coordinator.lastWordRange != newWordRange || coordinator.lastParagraphRange != newParagraphRange {
             textView.textStorage.beginEditing()
@@ -116,6 +126,7 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
     static func dismantleUIViewController(_ controller: ReaderViewController<Controls>, coordinator: Coordinator) {
         coordinator.cancelResume()
         controller.textView.delegate = nil
+        controller.onReaderLayout = nil
         coordinator.textView = nil
     }
 
@@ -157,6 +168,7 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         var lastWarmTheme: Bool?
         var lastWordRange: NSRange?
         var lastParagraphRange: NSRange?
+        var lastCurrentWord: WordTimestamp?
 
         init(_ parent: PlayableTextView) {
             self.parent = parent
@@ -256,6 +268,7 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
 @MainActor final class ReaderViewController<Controls: View>: UIViewController {
     let textView = UITextView()
     let controlsHost: UIHostingController<Controls>
+    var onReaderLayout: (() -> Void)?
 
     init(controls: Controls) {
         controlsHost = UIHostingController(rootView: controls)
@@ -290,7 +303,12 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
             controlsHost.view.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
         ])
         if #available(iOS 26.0, *) {
+            #if DEBUG
+            // Screenshot comparison only; production always uses the soft edge.
+            textView.bottomEdgeEffect.style = ProcessInfo.processInfo.arguments.contains("--reader-edge-automatic") ? .automatic : .soft
+            #else
             textView.bottomEdgeEffect.style = .soft
+            #endif
             let interaction = UIScrollEdgeElementContainerInteraction()
             interaction.scrollView = textView
             interaction.edge = .bottom
@@ -305,5 +323,6 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         let dockHeight = max(0, view.bounds.maxY - controlsHost.view.frame.minY)
         let inset = UIEdgeInsets(top: view.safeAreaInsets.top + 16, left: 16, bottom: dockHeight + 24, right: 16)
         if textView.textContainerInset != inset { textView.textContainerInset = inset }
+        onReaderLayout?()
     }
 }
