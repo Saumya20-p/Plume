@@ -412,7 +412,7 @@ struct PlayerControlsView: View {
             playbackEngine.currentDocument = nil
             onDismiss()
         } label: {
-            Image(systemName: "xmark")
+            Image(systemName: "stop.fill")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)

@@ -36,11 +36,14 @@ struct ReaderContractsTests {
         state.endInteraction(now: 10)
         let oldRevision = state.revision
         #expect(state.deadline == 13)
-        #expect(!state.resumeIfDue(now: 12.9, revision: oldRevision))
+        let resumeResult1 = state.resumeIfDue(now: 12.9, revision: oldRevision)
+        #expect(!resumeResult1)
         state.beginInteraction()
         state.endInteraction(now: 12)
-        #expect(!state.resumeIfDue(now: 15, revision: oldRevision))
-        #expect(state.resumeIfDue(now: 15, revision: state.revision))
+        let resumeResult2 = state.resumeIfDue(now: 15, revision: oldRevision)
+        #expect(!resumeResult2)
+        let resumeResult3 = state.resumeIfDue(now: 15, revision: state.revision)
+        #expect(resumeResult3)
         #expect(!state.isBrowsing)
     }
 
@@ -54,11 +57,14 @@ struct ReaderContractsTests {
         state.setAutoResumeAllowed(false, now: 2)
         #expect(state.deadline == nil)
         #expect(state.isBrowsing)
-        #expect(!state.resumeIfDue(now: 100, revision: oldRevision))
+        let resumeResult4 = state.resumeIfDue(now: 100, revision: oldRevision)
+        #expect(!resumeResult4)
         state.setAutoResumeAllowed(true, now: 100)
         #expect(state.deadline == 103)
-        #expect(!state.resumeIfDue(now: 102, revision: state.revision))
-        #expect(state.resumeIfDue(now: 103, revision: state.revision))
+        let resumeResult5 = state.resumeIfDue(now: 102, revision: state.revision)
+        #expect(!resumeResult5)
+        let resumeResult6 = state.resumeIfDue(now: 103, revision: state.revision)
+        #expect(resumeResult6)
     }
 
     @Test
@@ -72,6 +78,7 @@ struct ReaderContractsTests {
         state.returnToCurrentWord()
         #expect(!state.isBrowsing)
         #expect(!state.isInteracting)
-        #expect(!state.resumeIfDue(now: 100, revision: oldRevision))
+        let resumeResult7 = state.resumeIfDue(now: 100, revision: oldRevision)
+        #expect(!resumeResult7)
     }
 }
