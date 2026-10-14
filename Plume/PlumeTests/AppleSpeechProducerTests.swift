@@ -64,23 +64,23 @@ private final class TestProducerDelegate: AudioProducerDelegate {
     var finishedCallbacks: [PlaybackCallbackIdentity] = []
     var cancelledCallbacks: [PlaybackCallbackIdentity] = []
 
-    func producerDidStart(_ producer: any AudioProducerProtocol, callback: PlaybackCallbackIdentity) {
+    func producerDidStart(_: any AudioProducerProtocol, callback: PlaybackCallbackIdentity) {
         startedCallbacks.append(callback)
     }
 
     func producerWillSpeak(
-        _ producer: any AudioProducerProtocol,
+        _: any AudioProducerProtocol,
         callback: PlaybackCallbackIdentity,
         globalRange: UTF16TextRange
     ) {
         spokenRanges.append((callback, globalRange))
     }
 
-    func producerDidFinish(_ producer: any AudioProducerProtocol, callback: PlaybackCallbackIdentity) {
+    func producerDidFinish(_: any AudioProducerProtocol, callback: PlaybackCallbackIdentity) {
         finishedCallbacks.append(callback)
     }
 
-    func producerDidCancel(_ producer: any AudioProducerProtocol, callback: PlaybackCallbackIdentity) {
+    func producerDidCancel(_: any AudioProducerProtocol, callback: PlaybackCallbackIdentity) {
         cancelledCallbacks.append(callback)
     }
 }
@@ -493,6 +493,33 @@ final class AppleSpeechProducerTests: XCTestCase {
         XCTAssertEqual(producer.pendingRequestCount, 0)
         XCTAssertEqual(producer.totalBufferedCount, 0)
         XCTAssertEqual(mock.stopSpeakingCallCount, 1)
+    }
+
+    @MainActor
+    func testClearPendingQueueClearsQueueWhileRetainingInFlight() {
+        let mock = MockSpeechSynthesizer()
+        let producer = AppleSpeechProducer(synthesizer: mock)
+        producer.maxInFlightUtterances = 1
+
+        let r1 = AppleSpeechProducer.Request(
+            callback: makeCallback(offset: 0),
+            text: "Sentence 1",
+            sourceRange: UTF16TextRange(location: 0, length: 10)
+        )
+        let r2 = AppleSpeechProducer.Request(
+            callback: makeCallback(offset: 10),
+            text: "Sentence 2",
+            sourceRange: UTF16TextRange(location: 10, length: 10)
+        )
+
+        producer.enqueue([r1, r2])
+        XCTAssertEqual(producer.inFlightRequestCount, 1)
+        XCTAssertEqual(producer.pendingRequestCount, 1)
+
+        producer.clearPendingQueue()
+
+        XCTAssertEqual(producer.inFlightRequestCount, 1)
+        XCTAssertEqual(producer.pendingRequestCount, 0)
     }
 
     // MARK: - AudioProducerProtocol Conformance & Controls Tests

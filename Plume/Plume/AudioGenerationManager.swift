@@ -47,15 +47,9 @@ public class AudioGenerationManager: ObservableObject {
             .sink { [weak self] _ in
                 guard self != nil else { return }
                 MainActor.assumeIsolated {
-                    // 1. Immediately prevent new GPU work from starting.
-                    //    backgroundState is nonisolated with NSLock — safe to set directly.
+                    // Immediately prevent new GPU work from starting.
+                    // Instantaneous (~1 microsecond) — zero gesture lag.
                     KokoroTTSService.shared.getEngineActorSync()?.backgroundState.isPaused = true
-                    
-                    // 2. Wait for any currently generating chunk to finish, then drain all in-flight 
-                    //    Metal command buffers while GPU access is still valid.
-                    //    This blocks the main thread (with a 3.5s timeout) but is necessary
-                    //    to prevent the SIGABRT when iOS revokes GPU access.
-                    KokoroTTSService.shared.waitForGPUIdleSync()
                 }
             }
             .store(in: &cancellables)
@@ -107,6 +101,10 @@ public class AudioGenerationManager: ObservableObject {
         activePlaybackEngine = playbackEngine
         playbackEngine.beginGenerationSession(session)
         
+        if startChunkIndex == 0 {
+            playbackEngine.load(document: document, generationSession: session)
+        }
+        
         generationTask = Task { @MainActor [weak self, weak playbackEngine] in
             guard let self, let playbackEngine else { return }
 
@@ -129,9 +127,6 @@ public class AudioGenerationManager: ObservableObject {
             UIApplication.shared.isIdleTimerDisabled = true
             
             do {
-                if startChunkIndex == 0 {
-                    playbackEngine.load(document: document, generationSession: session)
-                }
                 
                 let generator = try await KokoroTTSService.shared.synthesizeGenerator(
                     document: document,
@@ -208,7 +203,7 @@ public class AudioGenerationManager: ObservableObject {
                     
                     guard playbackEngine.enqueue(chunk: updatedChunk) else { break }
                     if isFirst {
-                        if startChunkIndex == 0 && playbackEngine.coordinator.contract?.desiredPlayIntent != .paused {
+                        if playbackEngine.coordinator.contract?.desiredPlayIntent != .paused {
                             playbackEngine.play()
                         }
                         isFirst = false

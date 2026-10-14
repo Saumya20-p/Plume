@@ -7,7 +7,6 @@ struct SharedItem: Codable {
     let id: UUID
     let url: String
     let html: String?
-    let dateAdded: Date
 }
 
 enum AppGroup {
@@ -88,7 +87,7 @@ class ShareViewController: UIViewController {
     }
     
     private func saveItem(url: String, html: String?) {
-        let item = SharedItem(id: UUID(), url: url, html: html, dateAdded: Date())
+        let item = SharedItem(id: UUID(), url: url, html: html)
         
         do {
             let container = AppGroup.containerURL
@@ -115,9 +114,7 @@ class ShareViewController: UIViewController {
         }
     }
     
-    @objc private func openURL(_ url: URL) {
-        return
-    }
+
     
     private func openHostApp() {
         guard let url = URL(string: "plume://") else { return }

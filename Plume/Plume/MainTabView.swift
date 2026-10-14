@@ -107,7 +107,7 @@ struct MainTabView: View {
         }
         .sheet(isPresented: $showingManualPaste) {
             ManualPasteView(
-                url: failedURL,
+
                 title: failedTitle,
                 bodyText: failedBody,
                 onSave: { newTitle, newBody in

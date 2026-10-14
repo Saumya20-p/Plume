@@ -33,7 +33,9 @@ public class PlaybackCoordinator: ObservableObject {
                 AudioPlaybackEngine.shared.play()
             } else {
                 // Generate then play
+                AudioPlaybackEngine.shared.load(document: nextDoc)
                 AudioGenerationManager.shared.generate(document: nextDoc, playbackEngine: AudioPlaybackEngine.shared)
+                AudioPlaybackEngine.shared.play()
             }
         }
     }

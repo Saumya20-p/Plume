@@ -4,7 +4,6 @@ import SwiftData
 
 struct PlayArticleIntent: AppIntent {
     static var title: LocalizedStringResource = "Play Article"
-    static var description = IntentDescription("Play an article on Plume.")
     
     // We open the app to reliably handle AVQueuePlayer and AudioPlaybackEngine logic
     // without hitting strict background launch audio limitations.

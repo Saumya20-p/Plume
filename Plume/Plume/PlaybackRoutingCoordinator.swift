@@ -23,13 +23,10 @@ final class PlaybackRoutingCoordinator {
 
     private(set) var contract: PlaybackSessionContract?
 
-    /// Explicit accessor for the owned PlaybackStateMachine (alias for PlaybackSessionContract).
-    var stateMachine: PlaybackStateMachine? {
-        contract
-    }
+
 
     private(set) var document: Document?
-    private let appleProducer: AppleSpeechProducer
+    let appleProducer: AppleSpeechProducer
     private var segments: [TextSegmenter.Chunk] = []
     private var nextSegmentIndex = 0
     private var terminalCallbacks = Set<UUID>()
@@ -50,7 +47,7 @@ final class PlaybackRoutingCoordinator {
     private(set) var lastError: String?
 
     // MARK: - Speculative Handback State
-    private(set) var isHandbackPending: Bool = false
+    internal(set) var isHandbackPending: Bool = false
     private(set) var stagedHandbackChunks: [AudioChunk] = []
     private(set) var stagedHandbackSession: PlaybackGenerationSession?
     internal(set) var currentlySpeakingSegmentOrdinal: Int?
@@ -64,41 +61,16 @@ final class PlaybackRoutingCoordinator {
 
     // MARK: - Arbitration Properties
 
-    var snapshot: PlaybackSessionSnapshot? {
-        contract?.snapshot
-    }
-
     var desiredPlayIntent: PlaybackPlayIntent {
         contract?.desiredPlayIntent ?? .paused
     }
 
-    var actualActivity: PlaybackActualActivity {
-        contract?.actualActivity ?? .idle
-    }
-
-    var preparationStatus: PlaybackPreparationStatus {
-        contract?.preparationStatus ?? .idle
-    }
-
-    var activeProducer: PlaybackProducer? {
-        contract?.activeProducer
-    }
-
-    private(set) var isFallbackActive: Bool = false
+    var isFallbackActive: Bool = false
 
     var isAppleActive: Bool {
         if isFallbackActive { return true }
         guard let primaryVoice = contract?.primaryVoice else { return false }
         if case .apple = primaryVoice {
-            return true
-        }
-        return false
-    }
-
-    var isKokoroActive: Bool {
-        if isFallbackActive { return false }
-        guard let primaryVoice = contract?.primaryVoice else { return false }
-        if case .kokoro = primaryVoice {
             return true
         }
         return false
@@ -236,19 +208,6 @@ final class PlaybackRoutingCoordinator {
             return true
         }
 
-        do {
-            try appleProducer.activateAudioSession()
-        } catch {
-            lastError = Constants.playbackActivationFailed(error.localizedDescription)
-            contract.pause()
-            if let event = contract.eventIdentity(for: .apple) {
-                _ = contract.markRecoverablePause(event: event)
-            }
-            self.contract = contract
-            onActualPlayingChanged?(false)
-            notifyState()
-            return false
-        }
         lastError = nil
 
         if appleProducer.totalBufferedCount == 0 {
@@ -330,10 +289,7 @@ final class PlaybackRoutingCoordinator {
         _ = seek(toUTF16Offset: targetOffset)
     }
 
-    func skip(by seconds: TimeInterval) {
-        let newTime = max(0, estimatedCurrentTime + seconds)
-        seek(to: newTime)
-    }
+
 
     @discardableResult
     func beginInterruption() -> Bool {
@@ -451,6 +407,16 @@ final class PlaybackRoutingCoordinator {
         
         guard didFallbackChange || didPrimaryChange else { return }
         
+        if didPrimaryChange {
+            if isFallbackActive {
+                isFallbackActive = false
+                appleProducer.stop()
+            }
+            if case .apple = currentContract.primaryVoice, case .kokoro = preferences.primary {
+                appleProducer.stop()
+            }
+        }
+        
         let wasAppleActive = isAppleActive
         currentContract.updatePreferences(preferences)
         self.contract = currentContract
@@ -458,16 +424,16 @@ final class PlaybackRoutingCoordinator {
         
         let activeAppleVoiceChanged: Bool
         if isFallbackActive {
-            activeAppleVoiceChanged = didFallbackChange
+            activeAppleVoiceChanged = didFallbackChange || appleVoice == nil
         } else {
-            activeAppleVoiceChanged = wasAppleActive && isNowAppleActive && didPrimaryChange
+            activeAppleVoiceChanged = isNowAppleActive && (didPrimaryChange || appleVoice == nil)
         }
         
         if activeAppleVoiceChanged {
             let activeIdentifier = isFallbackActive ? preferences.fallbackAppleVoiceIdentifier : preferences.primary.identifier
             let newVoice = resolveAppleVoice(identifier: activeIdentifier)
             
-            if appleVoice?.identifier != newVoice?.identifier {
+            if appleVoice?.identifier != newVoice?.identifier || appleVoice == nil {
                 appleVoice = newVoice
                 if isFallbackActive {
                     resolvedFallbackIdentifier = activeIdentifier
@@ -534,11 +500,6 @@ final class PlaybackRoutingCoordinator {
         let wasPlaying = desiredPlayIntent == .playing || (contract?.desiredPlayIntent == .playing)
         if wasPlaying {
             _ = contract?.requestPlay()
-            do {
-                try appleProducer.activateAudioSession()
-            } catch {
-                lastError = Constants.fallbackActivationFailed(error.localizedDescription)
-            }
             pumpAppleUtterances()
         }
 
@@ -547,14 +508,7 @@ final class PlaybackRoutingCoordinator {
         return true
     }
 
-    /// Seamlessly hands off playback to Apple Speech (alias for triggerFallback).
-    @discardableResult
-    func handoff(
-        resumeCursor: PlaybackSourceCursor? = nil,
-        reason: String? = nil
-    ) -> Bool {
-        triggerFallback(resumeCursor: resumeCursor, reason: reason)
-    }
+
 
     // MARK: - Speculative Handback Coordination (Phase 6)
 
@@ -591,7 +545,13 @@ final class PlaybackRoutingCoordinator {
         if let session {
             self.stagedHandbackSession = session
         }
+        let shouldExecuteImmediately = isHandbackPending && !appleProducer.isSpeaking && currentlySpeakingSegmentOrdinal == nil
         isHandbackPending = true
+        appleProducer.clearPendingQueue()
+
+        if shouldExecuteImmediately {
+            executeHandback()
+        }
     }
 
     /// Cancels any pending speculative handback and discards staged chunks.
@@ -731,6 +691,7 @@ final class PlaybackRoutingCoordinator {
     }
 
     private func pumpAppleUtterances() {
+        guard !isHandbackPending else { return }
         guard isAppleActive,
               let voice = appleVoice,
               var contract = self.contract,
@@ -749,10 +710,33 @@ final class PlaybackRoutingCoordinator {
                     contract.sourceUTF16Length
                 )
             )
-            let requestedLocalOffset = max(
+            var requestedLocalOffset = max(
                 0,
                 min(cursorOffset - segmentStart, segment.text.utf16.count)
             )
+            
+            let utf16 = segment.text.utf16
+            var currentIdx = utf16.index(utf16.startIndex, offsetBy: requestedLocalOffset)
+            let boundaryChars = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
+            while currentIdx > utf16.startIndex && currentIdx < utf16.endIndex {
+                let codeUnit = utf16[currentIdx]
+                if codeUnit < 0xD800 || codeUnit > 0xDFFF {
+                    if let scalar = UnicodeScalar(codeUnit), boundaryChars.contains(scalar) {
+                        break
+                    }
+                }
+                
+                let prevIdx = utf16.index(before: currentIdx)
+                let prevCodeUnit = utf16[prevIdx]
+                if prevCodeUnit < 0xD800 || prevCodeUnit > 0xDFFF {
+                    if let scalar = UnicodeScalar(prevCodeUnit), boundaryChars.contains(scalar) {
+                        break
+                    }
+                }
+                currentIdx = prevIdx
+            }
+            requestedLocalOffset = utf16.distance(from: utf16.startIndex, to: currentIdx)
+
             let localOffset = normalizedUTF16Offset(
                 requestedLocalOffset,
                 in: segment.text
@@ -814,9 +798,7 @@ final class PlaybackRoutingCoordinator {
         }
     }
 
-    private func requestNextAppleUtterance() {
-        pumpAppleUtterances()
-    }
+
 
     private func handleDidStart(_ callback: PlaybackCallbackIdentity) {
         currentlySpeakingSegmentOrdinal = callback.sourceBoundary.segmentOrdinal
@@ -901,16 +883,23 @@ final class PlaybackRoutingCoordinator {
             currentlySpeakingSegmentOrdinal = nil
         }
 
-        // Speculative Handback check (Phase 6)
+        // Speculative Handback check (Phase 6 / Foreground Hand-back)
         if isFallbackActive && (isHandbackPending || !stagedHandbackChunks.isEmpty) {
             let finishedOrdinal = callback.sourceBoundary.segmentOrdinal
             // Discard any staged chunks that are for this finished ordinal or earlier
             stagedHandbackChunks.removeAll { $0.identity.segmentID.ordinal <= finishedOrdinal }
 
-            // If the next staged chunk matches the boundary (finishedOrdinal + 1), execute the handback swap!
-            if let nextChunk = stagedHandbackChunks.first,
-               nextChunk.identity.segmentID.ordinal == finishedOrdinal + 1 {
+            if let nextChunk = stagedHandbackChunks.first {
+                _ = nextChunk
                 executeHandback()
+                return
+            }
+
+            if !isTerminal {
+                // If no staged chunk is ready yet, do NOT pump more utterances to Apple Speech;
+                // leave Apple Speech idle so that as soon as stageHandbackChunk is called, it triggers executeHandback().
+                isHandbackPending = true
+                appleProducer.clearPendingQueue()
                 return
             }
         }
@@ -1098,5 +1087,4 @@ final class PlaybackRoutingCoordinator {
     }
 }
 
-/// Backward compatibility alias for any existing references.
-typealias PlaybackSessionRouter = PlaybackRoutingCoordinator
+

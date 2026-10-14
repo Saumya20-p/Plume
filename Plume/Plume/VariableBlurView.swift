@@ -67,7 +67,6 @@ public class VariableBlurUIView: UIView {
     
     private var lastSize: CGSize = .zero
     private var lastDirection: VariableBlurDirection?
-    private var lastMaxBlurRadius: CGFloat?
     
     public override func layoutSubviews() {
         super.layoutSubviews()
@@ -87,7 +86,6 @@ public class VariableBlurUIView: UIView {
         self.direction = direction
         self.maxBlurRadius = maxBlurRadius
         self.lastDirection = direction
-        self.lastMaxBlurRadius = maxBlurRadius
         
         // Ensure we don't apply if size is 0 (layoutSubviews will handle it later)
         if bounds.size != .zero {

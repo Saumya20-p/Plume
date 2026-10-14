@@ -157,6 +157,8 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
 
     var maxInFlightUtterances: Int = 2
     private(set) var generationID: UInt64 = 0
+    private var activeCursor: Int?
+    private var activeRequestID: UUID?
 
     weak var delegate: (any AudioProducerDelegate)?
     var onDidStart: ((PlaybackCallbackIdentity) -> Void)?
@@ -209,13 +211,10 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
             continuation.finish()
         }
     }
-
+    
     func activateAudioSession() throws {
-        #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
-        let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playback, mode: .spokenAudio, options: [])
-        try audioSession.setActive(true)
-        #endif
+        // Audio session is globally managed by AudioPlaybackEngine via a background queue.
+        // Doing this here on the main thread causes UI unresponsiveness and 'cannot add handler' CoreAnimation drops.
     }
 
     func speak(_ request: Request) {
@@ -232,9 +231,27 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
         pumpQueue()
     }
 
+    func clearPendingQueue() {
+        pendingQueue.removeAll(keepingCapacity: true)
+    }
+
     func pause() {
         guard isSpeaking else { return }
         _ = synthesizer.pauseSpeaking(at: .immediate)
+        
+        if let activeCursor = activeCursor,
+           let activeRequestID = activeRequestID,
+           let request = requests[activeRequestID] {
+             if let globalRange = Self.mapToGlobalRange(
+                 localRange: NSRange(location: activeCursor, length: 0),
+                 utteranceText: request.request.text,
+                 sourceRange: request.request.sourceRange
+             ) {
+                 onWillSpeak?(request.request.callback, globalRange)
+                 delegate?.producerWillSpeak(self, callback: request.request.callback, globalRange: globalRange)
+                 yieldProducerEvent(.willSpeak(request.request.callback, globalRange))
+             }
+        }
     }
 
     func resume() {
@@ -262,6 +279,8 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
         requests.removeAll(keepingCapacity: true)
         pendingQueue.removeAll(keepingCapacity: true)
         inFlightUtteranceCount = 0
+        activeCursor = nil
+        activeRequestID = nil
     }
 
     private func pumpQueue() {
@@ -438,6 +457,15 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
               characterRange.location <= Int.max - characterRange.length else {
             return
         }
+        
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            self.activeCursor = characterRange.location
+            if let req = self.requests.first(where: { $0.value.utterance === utterance }) {
+                self.activeRequestID = req.key
+            }
+        }
+        
         eventBridge.yield(
             .willSpeak(UTF16TextRange(location: characterRange.location, length: characterRange.length)),
             for: ObjectIdentifier(utterance)

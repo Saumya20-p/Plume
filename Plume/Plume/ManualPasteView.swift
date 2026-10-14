@@ -3,7 +3,7 @@ import SwiftUI
 struct ManualPasteView: View {
     @Environment(\.dismiss) private var dismiss
     
-    let url: URL?
+
     @State var title: String
     @State var bodyText: String
     

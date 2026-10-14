@@ -64,11 +64,13 @@ final class VoicePreviewController {
         }
         
         // Prepare audio session
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            print("[VoicePreview] Failed to configure audio session: \(error)")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                print("[VoicePreview] Failed to configure audio session: \(error)")
+            }
         }
         
         switch voiceID {
@@ -331,32 +333,10 @@ struct VoiceSettingsView: View {
         }
         
         // Kokoro Neural Voices
-        Section(header: Text("Kokoro Neural Voices"), footer: Text("High-naturalness neural voices running on-device.")) {
-            ForEach(allVoiceCategories) { category in
-                DisclosureGroup(
-                    isExpanded: Binding(
-                        get: { isCategoryActive(category) },
-                        set: { _ in }
-                    )
-                ) {
-                    ForEach(category.voices) { voice in
-                        kokoroVoiceRow(voice: voice, categoryName: category.name)
-                    }
-                } label: {
-                    HStack {
-                        Text(category.name)
-                            .font(.subheadline.weight(.semibold))
-                        Spacer()
-                        if isVoiceInCategorySelected(category) {
-                            Text("Selected")
-                                .font(.caption2.weight(.medium))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(DesignSystem.accent.opacity(0.15))
-                                .foregroundStyle(DesignSystem.accent)
-                                .clipShape(Capsule())
-                        }
-                    }
+        ForEach(allVoiceCategories) { category in
+            Section(header: Text(category.name)) {
+                ForEach(category.voices) { voice in
+                    kokoroVoiceRow(voice: voice, categoryName: category.name)
                 }
             }
         }
@@ -617,20 +597,6 @@ struct VoiceSettingsView: View {
     
     private var activeDocument: Document? {
         document ?? playbackEngine?.currentDocument ?? AudioPlaybackEngine.shared.currentDocument
-    }
-    
-    private func isCategoryActive(_ category: VoiceCategory) -> Bool {
-        if case .kokoro(let id) = preferences.primary {
-            return category.voices.contains(where: { $0.id == id })
-        }
-        return false
-    }
-    
-    private func isVoiceInCategorySelected(_ category: VoiceCategory) -> Bool {
-        if case .kokoro(let id) = preferences.primary {
-            return category.voices.contains(where: { $0.id == id })
-        }
-        return false
     }
     
     private func appleVoiceSubtitle(for descriptor: AppleSpeechVoiceDescriptor) -> String {

@@ -180,7 +180,7 @@ struct PlayerControlsView: View {
     var onDismiss: () -> Void
     @State private var showSpeedSheet = false
     @State private var showVoiceSheet = false
-    @State private var coverImage: UIImage?
+
     private func formatTime(_ time: TimeInterval) -> String {
         let min = Int(time) / 60
         let sec = Int(time) % 60
@@ -269,14 +269,20 @@ struct PlayerControlsView: View {
                 
                 Button(action: {
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    if !playbackEngine.isAppleActive && playbackEngine.chunks.isEmpty && document.audioFileURL == nil && !generationManager.generatingDocumentIDs.contains(document.id) {
+                    let isGenerating = !playbackEngine.isAppleActive && generationManager.generatingDocumentIDs.contains(document.id) && playbackEngine.chunks.isEmpty && document.audioFileURL == nil
+                    
+                    if isGenerating {
+                        generationManager.cancelCurrentGeneration()
+                        playbackEngine.pause()
+                    } else if !playbackEngine.isAppleActive && playbackEngine.chunks.isEmpty && document.audioFileURL == nil && !generationManager.generatingDocumentIDs.contains(document.id) {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                             let resumeIndex = PlaybackProgress.shared.currentWord?.rangeLocation ?? document.lastReadCharIndex
                             if resumeIndex > 0 {
                                 playbackEngine.seek(toCharIndex: resumeIndex)
-                                playbackEngine.isPlaying = true
+                                playbackEngine.play()
                             } else {
                                 generationManager.generate(document: document, playbackEngine: playbackEngine)
+                                playbackEngine.play()
                             }
                         }
                     } else {
@@ -284,18 +290,24 @@ struct PlayerControlsView: View {
                     }
                 }) {
                     let isGenerating = !playbackEngine.isAppleActive && generationManager.generatingDocumentIDs.contains(document.id) && playbackEngine.chunks.isEmpty && document.audioFileURL == nil
-                    if isGenerating {
-                        ThinkingOrbView()
-                            .frame(width: 52, height: 52)
-                    } else {
-                        Image(systemName: playbackEngine.isPlaying ? "pause.fill" : "play.fill")
-                            .contentTransition(.symbolEffect(.replace))
-                            .font(.title2)
-                            .frame(width: 52, height: 52)
-                            .background(DesignSystem.accent)
-                            .foregroundStyle(.white)
-                            .clipShape(Circle())
-                    }
+                    let showPauseIcon = playbackEngine.isPlaying || isGenerating
+                    
+                    Image(systemName: showPauseIcon ? "pause.fill" : "play.fill")
+                        .contentTransition(.symbolEffect(.replace))
+                        .font(.title2)
+                        .frame(width: 52, height: 52)
+                        .background(DesignSystem.accent)
+                        .foregroundStyle(.white)
+                        .clipShape(Circle())
+                        .overlay(
+                            Group {
+                                if isGenerating {
+                                    SpinnerOverlay(isGenerating: isGenerating)
+                                        .transition(.opacity)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                        )
                 }
                 .buttonStyle(ScaleButtonStyle())
                 
@@ -457,6 +469,49 @@ struct VoiceSelectionSheetView: View {
         }
         .presentationBackground(.ultraThinMaterial)
         .presentationBackgroundInteraction(.enabled(upThrough: .large))
+    }
+}
+
+
+struct SpinnerState {
+    var trimEnd: CGFloat = 0.01
+    var trimStart: CGFloat = 0.0
+}
+
+struct SpinnerOverlay: View {
+    let isGenerating: Bool
+    
+    var body: some View {
+        KeyframeAnimator(
+            initialValue: SpinnerState(),
+            repeating: isGenerating
+        ) { state in
+            Circle()
+                .trim(from: state.trimStart, to: state.trimEnd)
+                .stroke(
+                    DesignSystem.accent,
+                    style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                )
+                .frame(width: 60, height: 60)
+        } keyframes: { _ in
+            // Lead point — races ahead, finishes at 3 o'clock
+            KeyframeTrack(\.trimEnd) {
+                CubicKeyframe(0.75, duration: 0.6)   // Head start: 0→75%
+                CubicKeyframe(1.0, duration: 0.4)    // Lead finishes: 75→100%
+                CubicKeyframe(1.0, duration: 0.5)    // Holds at finish line
+                CubicKeyframe(0.01, duration: 0.01)  // Reset (instant)
+            }
+            
+            // Tail point — follows behind, sprints to catch up
+            KeyframeTrack(\.trimStart) {
+                CubicKeyframe(0.25, duration: 0.6)   // Running behind: 0→25%
+                CubicKeyframe(0.45, duration: 0.4)   // Still running: 25→45%
+                SpringKeyframe(0.98, duration: 0.5, spring: .init(response: 0.4, dampingRatio: 0.75)) // SPRINT! Springs to finish
+                CubicKeyframe(0.0, duration: 0.01)   // Reset (instant)
+            }
+        }
+        .opacity(isGenerating ? 1 : 0)
+        .animation(.easeInOut(duration: 0.2), value: isGenerating)
     }
 }
 

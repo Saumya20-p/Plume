@@ -17,8 +17,11 @@ import os
 
 import NaturalLanguage
 
+private struct KokoroGenerationQueue {
+    static let shared = DispatchQueue(label: "com.plume.kokoro.generation", qos: .userInitiated)
+}
+
 final class EngineBackgroundState: @unchecked Sendable {
-    private let lock = NSLock()
     private let condition = NSCondition()
     nonisolated(unsafe) private var paused = false
     nonisolated(unsafe) private var executing = false
@@ -27,15 +30,15 @@ final class EngineBackgroundState: @unchecked Sendable {
     nonisolated init() {}
     
     nonisolated var isPaused: Bool {
-        get { lock.lock(); defer { lock.unlock() }; return paused }
+        get { condition.lock(); defer { condition.unlock() }; return paused }
         set { 
-            lock.lock()
+            condition.lock()
             paused = newValue
             let pending = continuations
             if !paused {
                 continuations.removeAll()
             }
-            lock.unlock()
+            condition.unlock()
             if !paused {
                 for cont in pending {
                     cont.resume()
@@ -45,14 +48,14 @@ final class EngineBackgroundState: @unchecked Sendable {
     }
     
     nonisolated var isExecuting: Bool {
-        get { lock.lock(); defer { lock.unlock() }; return executing }
+        get { condition.lock(); defer { condition.unlock() }; return executing }
     }
     
     nonisolated func cancelWaiters() {
-        lock.lock()
+        condition.lock()
         let pending = continuations
         continuations.removeAll()
-        lock.unlock()
+        condition.unlock()
         for cont in pending {
             cont.resume(throwing: CancellationError())
         }
@@ -64,13 +67,13 @@ final class EngineBackgroundState: @unchecked Sendable {
         
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                lock.lock()
+                condition.lock()
                 if !paused {
-                    lock.unlock()
+                    condition.unlock()
                     cont.resume()
                 } else {
                     continuations.append(cont)
-                    lock.unlock()
+                    condition.unlock()
                 }
             }
         } onCancel: {
@@ -82,8 +85,8 @@ final class EngineBackgroundState: @unchecked Sendable {
     }
     
     nonisolated func tryStartExecuting() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
+        condition.lock()
+        defer { condition.unlock() }
         if paused {
             return false
         }
@@ -92,15 +95,15 @@ final class EngineBackgroundState: @unchecked Sendable {
     }
     
     nonisolated func stopExecuting() {
-        lock.lock()
+        condition.lock()
         executing = false
         condition.broadcast()
-        lock.unlock()
+        condition.unlock()
     }
 
     nonisolated func waitForIdle(timeoutSeconds: TimeInterval) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
+        condition.lock()
+        defer { condition.unlock() }
         let limit = Date().addingTimeInterval(timeoutSeconds)
         while executing {
             if Date() > limit { return false }
@@ -225,20 +228,30 @@ actor KokoroEngineActor {
         let voice = try voiceEmbedding(identifier: voiceIdentifier)
         let lang = self.language
         
-        try autoreleasepool {
-            var result: ([Float], [MToken]?)?
-            var attempt = 0
-            while attempt < 3 {
-                do {
-                    result = try ttsEngine.generateAudio(voice: voice, language: lang, text: normalizedText)
-                    break
-                } catch {
-                    attempt += 1
-                    if attempt >= 3 {
-                        throw error
+        var result: ([Float], [MToken]?)?
+        var attempt = 0
+        while attempt < 3 {
+            do {
+                result = try await withCheckedThrowingContinuation { continuation in
+                    KokoroGenerationQueue.shared.async {
+                        do {
+                            let res = try ttsEngine.generateAudio(voice: voice, language: lang, text: normalizedText)
+                            continuation.resume(returning: res)
+                        } catch {
+                            continuation.resume(throwing: error)
+                        }
                     }
                 }
+                break
+            } catch {
+                attempt += 1
+                if attempt >= 3 {
+                    throw error
+                }
             }
+        }
+        
+        try autoreleasepool {
             guard let finalResult = result else { 
                 throw NSError(domain: "KokoroTTS", code: 7, userInfo: [NSLocalizedDescriptionKey: "Failed to generate audio"])
             }
@@ -619,22 +632,28 @@ public class AudioChunkGenerator {
 class KokoroTTSService: ObservableObject {
     static let shared = KokoroTTSService()
     
-    private var engineActor: KokoroEngineActor?
+    nonisolated(unsafe) private var engineActor: KokoroEngineActor?
     
     // Used safely from main thread to bypass MainActor isolation for detached tasks
-    func getEngineActorSync() -> KokoroEngineActor? {
+    nonisolated func getEngineActorSync() -> KokoroEngineActor? {
         return self.engineActor
     }
     
     /// Synchronously waits for any active chunk generation to finish, then drains GPU buffers.
-    /// Call from willResignActiveNotification to ensure no Metal work is pending
+    /// Call from background notifications to ensure no Metal work is pending
     /// before iOS revokes background GPU access. Safe to call from main thread.
-    func waitForGPUIdleSync() {
+    nonisolated func waitForGPUIdleSync() {
         guard let state = getEngineActorSync()?.backgroundState else { return }
         
-        let finished = state.waitForIdle(timeoutSeconds: 3.5)
+        // If not actively generating on the GPU, return immediately
+        guard state.isExecuting else {
+            MLX.Stream.defaultStream(.gpu).synchronize()
+            return
+        }
+        
+        let finished = state.waitForIdle(timeoutSeconds: 2.0)
         if !finished {
-            Log.tts.error("Warning: MLX evaluation did not finish in time for background transition.")
+            Log.tts.error("Warning: MLX evaluation did not finish within 2.0s limit for background transition.")
         }
         
         // Now that no new commands are being submitted, drain all in-flight Metal command buffers

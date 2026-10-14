@@ -504,6 +504,136 @@ final class KokoroPlaybackFoundationTests: XCTestCase {
         engine.pause()
     }
 
+
+    func testPumpAppleUtterancesDoesNotQueueWhenHandbackIsPending() {
+        let coordinator = PlaybackRoutingCoordinator()
+        let document = Document(title: "Title", bodyText: "Sentence zero. Sentence one.")
+        let preferences = VoicePreferences(
+            primary: .kokoro(identifier: "af_heart"),
+            fallbackAppleVoiceIdentifier: "com.apple.speech.voice.Alex"
+        )
+        let snapshot = PlaybackSessionSnapshot(documentID: document.id, preferences: preferences)
+        _ = coordinator.begin(document: document, snapshot: snapshot)
+        _ = coordinator.triggerFallback(reason: "test")
+
+        // Set handback pending
+        coordinator.isHandbackPending = true
+
+        // Attempt to play / pump utterances
+        _ = coordinator.play()
+
+        // Apple Producer must have 0 buffered utterances because pumpAppleUtterances bailed early
+        XCTAssertEqual(coordinator.appleProducer.totalBufferedCount, 0)
+    }
+
+    func testStageHandbackChunkExecutesHandbackImmediatelyWhenIdleAndHandbackPending() {
+        let coordinator = PlaybackRoutingCoordinator()
+        let document = Document(title: "Title", bodyText: "Sentence zero. Sentence one.")
+        let preferences = VoicePreferences(
+            primary: .kokoro(identifier: "af_heart"),
+            fallbackAppleVoiceIdentifier: "com.apple.speech.voice.Alex"
+        )
+        let snapshot = PlaybackSessionSnapshot(documentID: document.id, preferences: preferences)
+        _ = coordinator.begin(document: document, snapshot: snapshot)
+        _ = coordinator.triggerFallback(reason: "test")
+        XCTAssertTrue(coordinator.isFallbackActive)
+
+        // Handback is pending and Apple Speech is idle
+        coordinator.isHandbackPending = true
+        coordinator.currentlySpeakingSegmentOrdinal = nil
+
+        let session = PlaybackGenerationSession(documentID: document.id, voice: .kokoro(identifier: "af_heart"))
+        let chunk = AudioChunk(
+            identity: GeneratedAudioChunkIdentity(
+                session: session,
+                segmentID: DocumentSegmentID(documentID: document.id, ordinal: 0, utf16Range: UTF16TextRange(location: 0, length: 14))
+            ),
+            fileURL: URL(fileURLWithPath: "/tmp/chunk0.m4a"),
+            duration: 1.0,
+            timestamps: []
+        )
+
+        coordinator.stageHandbackChunk(chunk, session: session)
+
+        // Handback must execute immediately
+        XCTAssertFalse(coordinator.isFallbackActive)
+        XCTAssertFalse(coordinator.isHandbackPending)
+        XCTAssertTrue(coordinator.stagedHandbackChunks.isEmpty)
+    }
+
+    func testHandleDidFinishLeavesAppleSpeechIdleWhenNoChunkReady() {
+        let coordinator = PlaybackRoutingCoordinator()
+        let document = Document(title: "Title", bodyText: "Sentence zero. Sentence one.")
+        let preferences = VoicePreferences(
+            primary: .kokoro(identifier: "af_heart"),
+            fallbackAppleVoiceIdentifier: "com.apple.speech.voice.Alex"
+        )
+        let snapshot = PlaybackSessionSnapshot(documentID: document.id, preferences: preferences)
+        _ = coordinator.begin(document: document, snapshot: snapshot)
+        _ = coordinator.triggerFallback(reason: "test")
+
+        coordinator.isHandbackPending = true
+
+        guard var contract = coordinator.contract,
+              let callback = contract.beginCallback(
+                  for: .apple,
+                  sourceBoundary: PlaybackSourceCursor(segmentOrdinal: 0, globalUTF16Offset: 14)!
+              ) else {
+            XCTFail("Could not create callback")
+            return
+        }
+        coordinator.appleProducer.onDidStart?(callback)
+
+        // Complete the utterance via coordinator's internal delegate callback
+        coordinator.appleProducer.onDidFinish?(callback)
+
+        // Handback is still pending, Apple Speech must be left idle (0 buffered utterances)
+        XCTAssertTrue(coordinator.isHandbackPending)
+        XCTAssertEqual(coordinator.appleProducer.totalBufferedCount, 0)
+    }
+
+    func testHandleWillEnterForegroundSetsHandbackPendingAndClearsPendingQueue() {
+        let engine = AudioPlaybackEngine.shared
+        let document = Document(title: "Title", bodyText: "Sentence zero. Sentence one.")
+        engine.load(document: document)
+        _ = engine.coordinator.triggerFallback(reason: "test")
+        engine.isPlaying = true
+        engine.coordinator.isHandbackPending = false
+        
+        let callback = PlaybackCallbackIdentity(
+            sessionID: UUID(),
+            callbackGeneration: 0,
+            utteranceID: UUID(),
+            producer: .apple,
+            sourceBoundary: PlaybackSourceCursor(segmentOrdinal: 2, globalUTF16Offset: 0)!
+        )
+        let request = AppleSpeechProducer.Request(
+            callback: callback,
+            text: "Pending sentence",
+            sourceRange: UTF16TextRange(location: 0, length: 16)
+        )
+        engine.coordinator.appleProducer.enqueue(request)
+        
+        engine.handleWillEnterForeground()
+
+        XCTAssertTrue(engine.coordinator.isHandbackPending, "handleWillEnterForeground must set isHandbackPending to true")
+        XCTAssertEqual(engine.coordinator.appleProducer.pendingRequestCount, 0, "handleWillEnterForeground must clear pending queue")
+        
+        engine.cancelSpeculativeHandback()
+        engine.pause()
+    }
+
+    func testWillEnterForegroundNotificationUnpausesBackgroundState() {
+        if let actor = KokoroTTSService.shared.getEngineActorSync() {
+            actor.backgroundState.isPaused = true
+            XCTAssertTrue(actor.backgroundState.isPaused)
+            
+            NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+            
+            XCTAssertFalse(actor.backgroundState.isPaused, "willEnterForegroundNotification must synchronously unpause backgroundState")
+        }
+    }
+
     private func withDefaults(_ body: (UserDefaults) throws -> Void) throws {
         let suiteName = "KokoroPlaybackFoundationTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

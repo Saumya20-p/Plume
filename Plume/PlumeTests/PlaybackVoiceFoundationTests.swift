@@ -218,6 +218,31 @@ final class PlaybackVoiceFoundationTests: XCTestCase {
         }
     }
 
+    func testSaveSetsLegacyKokoroIdentifierForKokoroPrimary() throws {
+        try withDefaults { defaults in
+            let store = VoicePreferencesStore(defaults: defaults)
+            store.save(VoicePreferences(
+                primary: .kokoro(identifier: "af_bella"),
+                fallbackAppleVoiceIdentifier: nil
+            ))
+
+            XCTAssertEqual(defaults.string(forKey: "kokoroVoice"), "af_bella")
+        }
+    }
+
+    func testSaveDoesNotOverwriteLegacyKokoroIdentifierForApplePrimary() throws {
+        try withDefaults { defaults in
+            defaults.set("bm_george", forKey: "kokoroVoice")
+            let store = VoicePreferencesStore(defaults: defaults)
+            store.save(VoicePreferences(
+                primary: .apple(identifier: "com.apple.voice.compact.en-US.Samantha"),
+                fallbackAppleVoiceIdentifier: nil
+            ))
+
+            XCTAssertEqual(defaults.string(forKey: "kokoroVoice"), "bm_george")
+        }
+    }
+
     private func withDefaults(_ body: (UserDefaults) throws -> Void) throws {
         let suiteName = "PlaybackVoiceFoundationTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {

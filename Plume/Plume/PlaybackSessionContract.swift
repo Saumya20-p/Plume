@@ -7,10 +7,6 @@ import Foundation
 nonisolated enum PlaybackPlayIntent: Equatable, Sendable {
     case paused
     case playing
-
-    var wantsToPlay: Bool {
-        self == .playing
-    }
 }
 
 nonisolated enum PlaybackProducer: Equatable, Hashable, Sendable {
@@ -230,8 +226,6 @@ nonisolated struct PlaybackSessionSnapshot: Equatable, Sendable {
         self.primaryVoice = preferences.primary
         self.fallbackAppleVoiceIdentifier = preferences.fallbackAppleVoiceIdentifier
     }
-
-    var runID: UUID { sessionID }
 }
 
 /// The narrow state contract shared by the eventual router and its pure tests.
@@ -710,16 +704,6 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
             return completeLogicalDocumentAtEOF(at: cursor)
         }
     }
-
-    @discardableResult
-    mutating func transition(with event: PlaybackRoutingEvent) -> Bool {
-        send(event)
-    }
-
-    @discardableResult
-    mutating func handle(_ event: PlaybackRoutingEvent) -> Bool {
-        send(event)
-    }
 }
 
 typealias PlaybackStateMachine = PlaybackSessionContract
@@ -746,13 +730,6 @@ nonisolated enum AppleSpeechVoiceResolution: Equatable, Sendable {
         case .compatibleSystemDefault, .unavailable:
             return nil
         }
-    }
-
-    var systemDefaultCandidate: AppleSpeechVoiceCandidate? {
-        if case .compatibleSystemDefault(let candidate) = self {
-            return candidate
-        }
-        return nil
     }
 
     var reason: AppleSpeechVoiceResolutionReason {
@@ -834,19 +811,6 @@ nonisolated enum AppleSpeechVoiceResolver {
             return .compatibleSystemDefault(compatibleSystemDefault)
         }
         return .unavailable
-    }
-
-    static func resolve(
-        preferred: AppleSpeechVoiceDescriptor?,
-        eligibleVoices: [AppleSpeechVoiceDescriptor],
-        compatibleSystemDefault: AppleSpeechVoiceCandidate? = nil
-    ) -> AppleSpeechVoiceResolution {
-        resolve(
-            preferredIdentifier: preferred?.id,
-            preferredLocale: preferred?.language,
-            eligibleVoices: eligibleVoices,
-            compatibleSystemDefault: compatibleSystemDefault
-        )
     }
 
     private static func ordered(_ voices: [AppleSpeechVoiceDescriptor]) -> [AppleSpeechVoiceDescriptor] {

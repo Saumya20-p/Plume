@@ -7,8 +7,6 @@ public struct TextSegmenter {
         public let text: String
         public let range: Range<String.Index>
         public let nsRange: NSRange
-        let utf16Range: UTF16TextRange
-        
         init(
             id: DocumentSegmentID,
             text: String,
@@ -19,7 +17,6 @@ public struct TextSegmenter {
             self.text = text
             self.range = range
             self.nsRange = nsRange
-            self.utf16Range = id.utf16Range
         }
     }
     

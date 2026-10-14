@@ -72,6 +72,11 @@ final class VoicePreferencesStore {
     func save(_ preferences: VoicePreferences) {
         guard let primary = normalizedPrimary(preferences.primary) else { return }
 
+        if case .kokoro(let identifier) = primary {
+            defaults.set(identifier, forKey: Key.legacyKokoroIdentifier)
+            UserDefaults.standard.set(identifier, forKey: "kokoroVoice")
+        }
+
         writePrimary(primary)
 
         if let fallbackIdentifier = normalizedIdentifier(preferences.fallbackAppleVoiceIdentifier) {
