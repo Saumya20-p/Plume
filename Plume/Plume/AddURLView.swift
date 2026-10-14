@@ -84,7 +84,7 @@ struct AddURLView: View {
                 PlaybackQueueManager.shared.enqueue(doc.id)
                 let imageURL = result.coverImageURL
                 Task { @MainActor in
-                    guard let data = await fetchImportArtwork(imageURL), doc.deletedAt == nil else { return }
+                    guard let data = await fetchImportArtwork(imageURL), doc.modelContext != nil, doc.deletedAt == nil else { return }
                     doc.coverImageData = data
                 }
                 dismiss()

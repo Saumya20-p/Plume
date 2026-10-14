@@ -324,7 +324,7 @@ struct LibraryView: View {
                     try? FileManager.default.removeItem(at: fileURL)
                     PlaybackQueueManager.shared.enqueue(doc.id)
                     Task { @MainActor in
-                        guard let data = await fetchImportArtwork(extracted.coverImageURL), doc.deletedAt == nil else { return }
+                        guard let data = await fetchImportArtwork(extracted.coverImageURL), doc.modelContext != nil, doc.deletedAt == nil else { return }
                         doc.coverImageData = data
                     }
                     if let defaults = UserDefaults(suiteName: AppGroup.identifier),

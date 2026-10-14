@@ -85,7 +85,7 @@ struct MainTabView: View {
                     }
                 }
             )
-            .presentationDetents([.height(320)])
+            .presentationDetents([.height(320), .large])
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showingAddURL, onDismiss: {
@@ -144,6 +144,7 @@ struct MainTabView: View {
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
         }
+        .onDisappear { fileImportTask?.cancel() }
         .alert("Import Failed", isPresented: $showingImportError) {
             Button("Choose File Again") { importDestination = failedDestination; showingFileImporter = true }
             Button("Paste Text Manually") { importDestination = failedDestination; failedURL = nil; failedBody = ""; showingManualPaste = true }
@@ -257,8 +258,7 @@ struct AddMenuSheet: View {
             .padding(.top)
         }
         .presentationBackground(.ultraThinMaterial)
-        .presentationBackgroundInteraction(.enabled(upThrough: .height(240)))
-        .presentationDetents([.height(240)])
+
     }
 }
 
