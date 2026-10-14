@@ -177,26 +177,28 @@ struct LibraryView: View {
                     .listStyle(.insetGrouped)
                 }
             }
-            .navigationTitle("Library")
+            .navigationTitle(playbackEngine.presentedPlayerDocument == nil ? "Library" : "")
             .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { onAdd(nil) } label: {
-                        Image(systemName: "plus").frame(minWidth: 44, minHeight: 44)
-                    }
-                    .accessibilityLabel("Add to Library")
-                    Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            isSearchVisible.toggle()
-                            if !isSearchVisible { searchText = "" }
+                if playbackEngine.presentedPlayerDocument == nil {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        Button { onAdd(nil) } label: {
+                            Image(systemName: "plus").frame(minWidth: 44, minHeight: 44)
                         }
-                    } label: {
-                        Image(systemName: "magnifyingglass").frame(minWidth: 44, minHeight: 44)
+                        .accessibilityLabel("Add to Library")
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                isSearchVisible.toggle()
+                                if !isSearchVisible { searchText = "" }
+                            }
+                        } label: {
+                            Image(systemName: "magnifyingglass").frame(minWidth: 44, minHeight: 44)
+                        }
+                        .accessibilityLabel(isSearchVisible ? "Close Search" : "Search All Chapters")
+                        NavigationLink(destination: SettingsView()) {
+                            Image(systemName: "gearshape").frame(minWidth: 44, minHeight: 44)
+                        }
+                        .accessibilityLabel("Settings")
                     }
-                    .accessibilityLabel(isSearchVisible ? "Close Search" : "Search All Chapters")
-                    NavigationLink(destination: SettingsView()) {
-                        Image(systemName: "gearshape").frame(minWidth: 44, minHeight: 44)
-                    }
-                    .accessibilityLabel("Settings")
                 }
             }
             .alert("Deletion Incomplete", isPresented: Binding(get: { deletionError != nil }, set: { if !$0 { deletionError = nil } })) {
@@ -250,6 +252,9 @@ struct LibraryView: View {
     }
     
     private func checkSharedItems() {
+        #if DEBUG
+        guard !UIExperimentFixture.enabled else { return }
+        #endif
         let container = AppGroup.containerURL
         guard let files = try? FileManager.default.contentsOfDirectory(at: container, includingPropertiesForKeys: nil) else { return }
         let sharedFiles = files.filter { $0.lastPathComponent.hasPrefix("shared_") && $0.pathExtension == "json" }

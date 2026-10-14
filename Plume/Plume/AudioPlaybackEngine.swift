@@ -85,6 +85,7 @@ public class AudioPlaybackEngine: ObservableObject {
     var lastProgressSaveTime: TimeInterval = 0
     var wallClockSessionStartTime: TimeInterval?
     var currentSeekTask: Task<Void, Never>? = nil
+    var seekRevision = 0
     var generationGate = PlaybackGenerationGate()
     
     @Published public var basePlaybackSpeed: Float {
@@ -136,13 +137,13 @@ public class AudioPlaybackEngine: ObservableObject {
     public var isGenerationActive: Bool = false
     var isRecoveringFromUnderrun: Bool = false
     
-    func finishGeneration(sessionID: UUID) {
+    func finishGeneration(sessionID: UUID, preservingPlaybackIntent: Bool = false) {
         guard generationGate.isActive(sessionID: sessionID) else {
             return
         }
 
         isGenerationActive = false
-        if chunks.isEmpty && !coordinator.isAppleActive {
+        if chunks.isEmpty && !coordinator.isAppleActive && !preservingPlaybackIntent {
             self.pause()
         }
         if isRecoveringFromUnderrun && isPlaying && !coordinator.isAppleActive {
@@ -324,6 +325,7 @@ public class AudioPlaybackEngine: ObservableObject {
     }
 
     func load(document: Document, generationSession: PlaybackGenerationSession?) {
+        cancelPendingSeek()
         cancelSpeculativeHandback()
         if let generationSession {
             generationGate.activate(generationSession)
@@ -490,35 +492,40 @@ public class AudioPlaybackEngine: ObservableObject {
         self.isPlaying = true
     }
     
-    public func seek(to targetTime: TimeInterval) {
-        cancelSpeculativeHandback()
-        seekDebounceTimer?.invalidate()
-        let timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                self?.performSeek(to: targetTime)
-            }
-        }
-        timer.tolerance = 0.025
-        seekDebounceTimer = timer
-    }
-
-
-    public func seek(toCharIndex charIndex: Int) {
-        cancelSpeculativeHandback()
-        seekDebounceTimer?.invalidate()
-        let timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                self?.performSeek(toCharIndex: charIndex)
-            }
-        }
-        timer.tolerance = 0.025
-        seekDebounceTimer = timer
-    }
-    
-
-    public func skipForward() {
+    func cancelPendingSeek() {
+        seekRevision &+= 1
         seekDebounceTimer?.invalidate()
         seekDebounceTimer = nil
+        currentSeekTask?.cancel()
+        currentSeekTask = nil
+    }
+
+    public func seek(to targetTime: TimeInterval) {
+        scheduleSeek { engine in engine.performSeek(to: targetTime) }
+    }
+
+    public func seek(toCharIndex charIndex: Int) {
+        scheduleSeek { engine in engine.performSeek(toCharIndex: charIndex) }
+    }
+
+    private func scheduleSeek(_ action: @escaping @MainActor (AudioPlaybackEngine) -> Void) {
+        cancelSpeculativeHandback()
+        cancelPendingSeek()
+        guard let documentID = currentDocument?.id else { return }
+        let revision = seekRevision
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.seekRevision == revision, self.currentDocument?.id == documentID else { return }
+                self.seekDebounceTimer = nil
+                action(self)
+            }
+        }
+        timer.tolerance = 0.025
+        seekDebounceTimer = timer
+    }
+
+    public func skipForward() {
+        cancelPendingSeek()
         performSeek(to: currentTime + defaultSkipInterval)
     }
     
@@ -684,7 +691,9 @@ public class AudioPlaybackEngine: ObservableObject {
 
     public func triggerFallbackToAppleSpeech(reason: String) {
         cancelSpeculativeHandback()
-        guard !coordinator.isAppleActive, let doc = currentDocument else { return }
+        guard !coordinator.isAppleActive, let doc = currentDocument,
+              let fallbackSessionID = coordinator.contract?.sessionID else { return }
+        let fallbackDocumentID = doc.id
         
         Log.audio.warning("Triggering fallback to Apple Speech. Reason: \(reason, privacy: .public)")
         
@@ -702,7 +711,7 @@ public class AudioPlaybackEngine: ObservableObject {
 
         // 2. Pause playback and cancel Kokoro generation tasks
         // 2. Cancel Kokoro generation tasks (but do NOT pause AVQueuePlayer yet so it overlaps)
-        AudioGenerationManager.shared.cancelCurrentGeneration()
+        AudioGenerationManager.shared.cancelCurrentGeneration(preservingPlaybackIntent: true)
         isGenerationActive = false
         isRecoveringFromUnderrun = false
         
@@ -726,7 +735,9 @@ public class AudioPlaybackEngine: ObservableObject {
             audioSessionQueue.async { [weak self] in
                 try? AVAudioSession.sharedInstance().setActive(true)
                 DispatchQueue.main.async {
-                    guard let self = self else {
+                    guard let self = self,
+                          self.currentDocument?.id == fallbackDocumentID,
+                          self.coordinator.contract?.sessionID == fallbackSessionID else {
                         if backgroundTaskID != .invalid {
                             UIApplication.shared.endBackgroundTask(backgroundTaskID)
                         }
@@ -739,7 +750,7 @@ public class AudioPlaybackEngine: ObservableObject {
                     
                     if success {
                         self.currentTime = self.coordinator.estimatedCurrentTime
-                        self.isPlaying = true
+                        self.isPlaying = self.coordinator.desiredPlayIntent == .playing
                         self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
                         self.updateNowPlayingPlaybackInfo()
                     }
@@ -767,8 +778,7 @@ public class AudioPlaybackEngine: ObservableObject {
     func handleWillEnterForeground() {
         guard coordinator.isFallbackActive, let doc = currentDocument, (isPlaying || coordinator.contract?.desiredPlayIntent == .playing) else { return }
         Log.audio.info("Application returning to foreground during Apple Speech fallback; initiating speculative handback preparation.")
-        coordinator.isHandbackPending = true
-        coordinator.appleProducer.clearPendingQueue()
+        // Keep speech flowing until a replacement chunk is actually ready.
         triggerSpeculativeHandbackPreparation(for: doc)
     }
 

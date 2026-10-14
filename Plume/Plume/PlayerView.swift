@@ -114,6 +114,9 @@ struct PlayerView: View, Equatable {
         .sheet(isPresented: $showAppearanceSettings) {
             AppearanceSettingsView()
                 .environmentObject(appearanceManager)
+                #if DEBUG
+                .modifier(UIExperimentEnvironment())
+                #endif
         }
         .onAppear {
             readerVisible = true
@@ -223,11 +226,12 @@ struct PlayerControlsView: View {
                     showSpeedSheet = true
                 }) {
                     Text(String(format: "%.1fx", playbackEngine.playbackRate))
-                        .font(.caption.bold())
+                        .font(.caption.bold().monospacedDigit())
                         .lineLimit(1)
-                        .minimumScaleFactor(0.6)
+                        .fixedSize(horizontal: true, vertical: false)
                         .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
+                        .padding(.horizontal, 4)
+                        .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(ScaleButtonStyle())
@@ -245,7 +249,7 @@ struct PlayerControlsView: View {
                     playbackEngine.skipBackward() 
                 }) {
                     Image(systemName: "gobackward.\(skipVal)")
-                        .font(.body)
+                        .font(.system(size: 17))
                         .foregroundStyle(.primary)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
@@ -258,6 +262,9 @@ struct PlayerControlsView: View {
                 Button(action: {
                     onInteraction()
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    #if DEBUG
+                    defer { UIExperimentFixture.recordPlaybackDiagnostics() }
+                    #endif
                     let isGenerating = !playbackEngine.isAppleActive && generationManager.generatingDocumentIDs.contains(document.id) && playbackEngine.chunks.isEmpty && document.audioFileURL == nil
                     
                     if isGenerating {
@@ -283,7 +290,7 @@ struct PlayerControlsView: View {
                     
                     Image(systemName: showPauseIcon ? "pause.fill" : "play.fill")
                         .contentTransition(.symbolEffect(.replace))
-                        .font(.title2)
+                        .font(.system(size: 22))
                         .frame(width: 52, height: 52)
                         .background(DesignSystem.accent)
                         .foregroundStyle(.white)
@@ -309,7 +316,7 @@ struct PlayerControlsView: View {
                     playbackEngine.skipForward() 
                 }) {
                     Image(systemName: "goforward.\(skipVal)")
-                        .font(.body)
+                        .font(.system(size: 17))
                         .foregroundStyle(.primary)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
@@ -327,7 +334,7 @@ struct PlayerControlsView: View {
                     showVoiceSheet = true
                 }) {
                     Image(systemName: "person.wave.2.fill")
-                        .font(.body)
+                        .font(.system(size: 17))
                         .foregroundStyle(.primary)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
@@ -357,6 +364,9 @@ struct PlayerControlsView: View {
         .onDisappear { onSheetPresentationChanged(false) }
         .sheet(isPresented: $showSpeedSheet) {
             SpeedSettingsView()
+                #if DEBUG
+                .modifier(UIExperimentEnvironment())
+                #endif
         }
         .sheet(isPresented: $showVoiceSheet) {
             VoiceSelectionSheetView(document: document, playbackEngine: playbackEngine)
@@ -380,6 +390,8 @@ struct PlayerControlsView: View {
         let total = document.audioFileURL != nil ? formatTime(playbackEngine.duration / speed) : "~\(formatTime(document.estimatedDuration / speed))"
         return Text("\(current) / \(total)")
             .font(.caption2.monospacedDigit())
+            .lineLimit(1)
+            .minimumScaleFactor(0.5)
             .multilineTextAlignment(.center)
             .foregroundStyle(.secondary)
     }
@@ -391,7 +403,7 @@ struct PlayerControlsView: View {
             showQueueSheet = true
         } label: {
             Image(systemName: "list.bullet")
-                .font(.body)
+                .font(.system(size: 17))
                 .foregroundStyle(.primary)
                 .frame(width: 44, height: 44)
         }
@@ -407,7 +419,7 @@ struct PlayerControlsView: View {
             onDismiss()
         } label: {
             Image(systemName: "stop.fill")
-                .font(.body)
+                .font(.system(size: 17))
                 .foregroundStyle(.secondary)
                 .frame(width: 44, height: 44)
         }

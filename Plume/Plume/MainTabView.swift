@@ -52,6 +52,10 @@ struct MainTabView: View {
                 PlayerView(document: doc)
                     .equatable()
             }
+            .background(Color(uiColor: .systemBackground).ignoresSafeArea())
+            #if DEBUG
+            .modifier(UIExperimentEnvironment())
+            #endif
         }
         .sheet(isPresented: $showAddSheet) {
             AddMenuSheet(
@@ -177,63 +181,59 @@ struct MainTabView: View {
             guard let url = urls.first else { return }
             let destination = importDestination
             let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let copy = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(UUID().uuidString).appendingPathExtension(url.pathExtension)
-                var coordinationError: NSError?
-                var copyError: Error?
-                NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { source in
-                    do { try FileManager.default.copyItem(at: source, to: copy) }
-                    catch { copyError = error }
+            let title = url.deletingPathExtension().lastPathComponent
+            failedTitle = title
+            isImportingFile = true
+            let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+            fileImportTask = Task { @MainActor in
+                defer { isImportingFile = false }
+                let parser = Task.detached {
+                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                    try Task.checkCancellation()
+                    let copy = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(UUID().uuidString).appendingPathExtension(url.pathExtension)
+                    defer { try? FileManager.default.removeItem(at: copy) }
+                    var coordinationError: NSError?
+                    var copyError: Error?
+                    NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { source in
+                        do { try FileManager.default.copyItem(at: source, to: copy) }
+                        catch { copyError = error }
+                    }
+                    if let error = copyError ?? coordinationError { throw error }
+                    try Task.checkCancellation()
+                    return try ImportFileContent.parse(url: copy, fallbackTitle: title)
                 }
-                if let error = copyError ?? coordinationError { throw error }
-                let title = url.deletingPathExtension().lastPathComponent
-                failedTitle = title
-                isImportingFile = true
-                fileImportTask = Task { @MainActor in
-                    defer {
-                        isImportingFile = false
+                do {
+                    let content = try await awaitImportWorker(parser, deadline: deadline)
+                    try Task.checkCancellation()
+                    let destinationFolder = try destination.folder(in: modelContext)
+                    let folder = destinationFolder ?? (destination.createsBookFolder(isEPUB: content.isBook) ? Folder(name: content.title) : nil)
+                    var inserted: [Document] = []
+                    if destinationFolder == nil, let folder {
+                        folder.coverImageData = content.coverImageData
+                        modelContext.insert(folder)
                     }
-                    let parser = Task.detached {
-                        defer { try? FileManager.default.removeItem(at: copy) }
-                        return try ImportFileContent.parse(url: copy, fallbackTitle: title)
+                    for chapter in content.chapters {
+                        let doc = Document(title: chapter.title, bodyText: chapter.bodyText, wordCount: chapter.wordCount)
+                        doc.folder = folder
+                        doc.coverImageData = content.coverImageData
+                        modelContext.insert(doc)
+                        inserted.append(doc)
                     }
-                    do {
-                        let content = try await awaitImportWorker(parser, deadline: ContinuousClock.now.advanced(by: .seconds(30)))
-                        try Task.checkCancellation()
-                        let destinationFolder = try destination.folder(in: modelContext)
-                        let folder = destinationFolder ?? (destination.createsBookFolder(isEPUB: content.isBook) ? Folder(name: content.title) : nil)
-                        var inserted: [Document] = []
-                        if destinationFolder == nil, let folder {
-                            folder.coverImageData = content.coverImageData
-                            modelContext.insert(folder)
-                        }
-                        for chapter in content.chapters {
-                            let doc = Document(title: chapter.title, bodyText: chapter.bodyText, wordCount: chapter.wordCount)
-                            doc.folder = folder
-                            doc.coverImageData = content.coverImageData
-                            modelContext.insert(doc)
-                            inserted.append(doc)
-                        }
-                        do { try modelContext.save() }
-                        catch {
-                            inserted.forEach { modelContext.delete($0) }
-                            if destinationFolder == nil, let folder { modelContext.delete(folder) }
-                            throw error
-                        }
-                        if let first = inserted.first { PlaybackQueueManager.shared.enqueue(first.id) }
-                    } catch is CancellationError {
-                    } catch {
-                        guard !Task.isCancelled else { return }
-                        failedDestination = destination
-                        importErrorMessage = error.localizedDescription
-                        showingImportError = true
+                    do { try modelContext.save() }
+                    catch {
+                        inserted.forEach { modelContext.delete($0) }
+                        if destinationFolder == nil, let folder { modelContext.delete(folder) }
+                        throw error
                     }
+                    if let first = inserted.first { PlaybackQueueManager.shared.enqueue(first.id) }
+                } catch is CancellationError {
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    failedDestination = destination
+                    importErrorMessage = error.localizedDescription
+                    showingImportError = true
                 }
-            } catch {
-                importErrorMessage = error.localizedDescription
-                showingImportError = true
             }
         }
     }
@@ -297,14 +297,27 @@ struct AddMenuRow: View {
 }
 
 struct MiniPlayerView: View {
-    let document: Document
+    private let documentID: UUID
+    private let title: String
+    private let coverImageData: Data?
     @ObservedObject private var playbackEngine = AudioPlaybackEngine.shared
+
+    init(document: Document) {
+        // A disappearing dock can render after its model has been deleted or
+        // its context released. Keep display values independent of that model.
+        documentID = document.id
+        title = document.title
+        coverImageData = document.coverImageData
+    }
     
     var body: some View {
         HStack {
-            Button { playbackEngine.presentedPlayerDocument = document } label: {
+            Button {
+                guard let current = playbackEngine.currentDocument, current.id == documentID else { return }
+                playbackEngine.presentedPlayerDocument = current
+            } label: {
             HStack {
-            if let data = document.coverImageData, let uiImage = UIImage(data: data) {
+            if let data = coverImageData, let uiImage = UIImage(data: data) {
                 Image(uiImage: uiImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -322,7 +335,7 @@ struct MiniPlayerView: View {
             }
                 
             VStack(alignment: .leading, spacing: 2) {
-                Text(document.title)
+                Text(title)
                     .font(.body.weight(.semibold))
                     .lineLimit(2)
                 Text(playbackEngine.isPlaying ? "Playing..." : "Paused")
@@ -335,7 +348,7 @@ struct MiniPlayerView: View {
             .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Open player for \(document.title)")
+            .accessibilityLabel("Open player for \(title)")
             Button(action: { playbackEngine.togglePlayPause() }) {
                 Image(systemName: playbackEngine.isPlaying ? "pause.fill" : "play.fill")
                     .font(.title2)

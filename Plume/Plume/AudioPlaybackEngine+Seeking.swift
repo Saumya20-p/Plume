@@ -33,7 +33,7 @@ extension AudioPlaybackEngine {
         let currentVirtualStartTime = chunks.first?.globalStartTime ?? virtualBaseOffset
         let currentVirtualEndTime = chunks.last.map { $0.globalStartTime + $0.duration } ?? virtualBaseOffset
         if safeTargetTime >= currentVirtualStartTime && safeTargetTime <= currentVirtualEndTime, !chunks.isEmpty {
-            let wasPlaying = isPlaying
+            let wasPlaying = isPlaying || coordinator.contract?.desiredPlayIntent == .playing
             queuePlayer?.pause()
             queuePlayer?.removeAllItems()
             var localSeekTime: TimeInterval = 0
@@ -81,7 +81,7 @@ extension AudioPlaybackEngine {
             return
         }
         
-        let wasPlaying = isPlaying
+        let wasPlaying = isPlaying || coordinator.contract?.desiredPlayIntent == .playing
         queuePlayer?.pause()
         
         // 1. Coordinate with AudioGenerationManager
@@ -112,10 +112,9 @@ extension AudioPlaybackEngine {
         updateNowPlayingPlaybackInfo()
         
         if wasPlaying {
-            // It will resume automatically when enqueue is called in AudioGenerationManager if isFirst is handled correctly.
-            // But we can also set isPlaying to true so UI knows it's playing
-            self.isPlaying = true
-            self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+            // Starting generation at chunk zero reloads the logical session.
+            // Restore intent as well as UI state so the first chunk can play.
+            play()
         }
     }
 
@@ -185,7 +184,7 @@ extension AudioPlaybackEngine {
         let totalDuration = doc.estimatedDuration > 0 ? doc.estimatedDuration : max(duration, 1)
         let safeTargetTime = totalDuration * (Double(targetChunkIndex) / Double(segments.count))
         
-        let wasPlaying = isPlaying
+        let wasPlaying = isPlaying || coordinator.contract?.desiredPlayIntent == .playing
         queuePlayer?.pause()
         
         AudioGenerationManager.shared.cancelCurrentGeneration()
@@ -202,10 +201,7 @@ extension AudioPlaybackEngine {
         
         updateNowPlayingPlaybackInfo()
         
-        if wasPlaying {
-            self.isPlaying = true
-            self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
-        }
+        if wasPlaying { play() }
     }
 
 }

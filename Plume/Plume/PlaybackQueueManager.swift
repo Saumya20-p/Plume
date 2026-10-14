@@ -4,7 +4,12 @@ import SwiftUI
 
 @MainActor
 public class PlaybackQueueManager: ObservableObject {
+    #if DEBUG
+    public static let shared = PlaybackQueueManager(defaults: UIExperimentFixture.enabled
+        ? UserDefaults(suiteName: "PlumeUIExperiment-\(ProcessInfo.processInfo.processIdentifier)")! : .standard)
+    #else
     public static let shared = PlaybackQueueManager()
+    #endif
     
     @Published public var queue: [UUID] = []
     

@@ -352,6 +352,18 @@ final class PlaybackRoutingCoordinator {
         notifyState()
     }
 
+    /// Final release after cancellation, used when the chapter may be deleted.
+    func releaseSession() {
+        cancel()
+        document = nil
+        contract = nil
+        segments = []
+        nextSegmentIndex = 0
+        appleVoice = nil
+        resolvedFallbackIdentifier = nil
+        lastError = nil
+    }
+
     // MARK: - Fallback & Boundary Routing
 
     /// Commits a completed sentence boundary into the state machine.

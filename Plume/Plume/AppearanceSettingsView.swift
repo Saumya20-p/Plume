@@ -4,6 +4,7 @@ struct AppearanceSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var appearanceManager: AppearanceManager
+    @ScaledMetric(relativeTo: .caption) private var themeCardMinimumWidth: CGFloat = 88
     
     var body: some View {
         NavigationStack {
@@ -14,22 +15,12 @@ struct AppearanceSettingsView: View {
                 }
                 
                 Section(header: Text("Theme")) {
-                    HStack(spacing: 12) {
-                        ThemeCard(
-                            theme: .basic,
-                            isSelected: appearanceManager.activeTheme(colorScheme: colorScheme) == .basic,
-                            action: { selectTheme(.basic) }
-                        )
-                        ThemeCard(
-                            theme: .warm,
-                            isSelected: appearanceManager.activeTheme(colorScheme: colorScheme) == .warm,
-                            action: { selectTheme(.warm) }
-                        )
-                        ThemeCard(
-                            theme: .muted,
-                            isSelected: appearanceManager.activeTheme(colorScheme: colorScheme) == .muted,
-                            action: { selectTheme(.muted) }
-                        )
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: themeCardMinimumWidth), spacing: 12)], spacing: 12) {
+                        ForEach(ReadingTheme.allCases) { theme in
+                            ThemeCard(theme: theme,
+                                      isSelected: appearanceManager.activeTheme(colorScheme: colorScheme) == theme,
+                                      action: { selectTheme(theme) })
+                        }
                     }
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets())

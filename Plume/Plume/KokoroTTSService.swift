@@ -779,6 +779,9 @@ class KokoroTTSService: ObservableObject {
     }
     
     func synthesize(document: Document, progress: @Sendable @escaping (Int, Int) -> Void = { _, _ in }) async throws {
+        let writer = try AudioCacheStore.shared.beginWriting(documentID: document.id)
+        defer { AudioCacheStore.shared.finishWriting(writer) }
+        try Task.checkCancellation()
         if !isModelLoaded {
             try await loadModel()
         }
@@ -796,6 +799,7 @@ class KokoroTTSService: ObservableObject {
         
         let timestamps = try await engineActor.synthesizeToFile(text: document.bodyText, fileURL: fileURL, progress: progress)
         
+        try Task.checkCancellation()
         document.decodedWordTimestamps = timestamps
     }
     

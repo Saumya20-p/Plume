@@ -7,7 +7,14 @@ public final class StorageManager {
     public let audioCacheURL: URL
     
     private init() {
-        let container = AppGroup.containerURL
+        let container: URL
+        #if DEBUG
+        container = UIExperimentFixture.enabled
+            ? FileManager.default.temporaryDirectory.appendingPathComponent("PlumeUIExperiment-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+            : AppGroup.containerURL
+        #else
+        container = AppGroup.containerURL
+        #endif
         
         swiftDataURL = container.appendingPathComponent("SwiftData", isDirectory: true)
         audioCacheURL = container.appendingPathComponent("AudioCache", isDirectory: true)

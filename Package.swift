@@ -37,7 +37,7 @@ let package = Package(
             name: "PlumeHostTests",
             dependencies: ["Plume"],
             path: "Plume/PlumeTests",
-            exclude: ["KokoroPlaybackFoundationTests.swift", "PlumeTests.swift"],
+            exclude: ["KokoroPlaybackFoundationTests.swift", "PlumeTests.swift", "QueueDeletionTests.swift", "PlaybackSeekLifecycleTests.swift"],
             sources: [
                 "PlaybackVoiceFoundationTests.swift",
                 "PlaybackSessionContractTests.swift",

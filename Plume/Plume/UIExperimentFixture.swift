@@ -8,8 +8,24 @@ import SwiftUI
 @MainActor
 enum UIExperimentFixture {
     static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--ui-experiment-fixture") }
+    static func recordPlaybackDiagnostics() {
+        guard enabled else { return }
+        Task { @MainActor in
+            for delay in [1, 4] {
+                try? await Task.sleep(for: .seconds(delay))
+                let engine = AudioPlaybackEngine.shared
+                let generation = AudioGenerationManager.shared
+                print("UI playback diagnostics:", "playing=\(engine.isPlaying)", "chunks=\(engine.chunks.count)", "time=\(engine.currentTime)", "generation=\(generation.generationProgress ?? "none")", "generationError=\(generation.lastError ?? "none")", "routingError=\(engine.coordinator.lastError ?? "none")", "intent=\(String(describing: engine.coordinator.contract?.desiredPlayIntent))", "modelLoaded=\(KokoroTTSService.shared.isModelLoaded)")
+            }
+        }
+    }
     static func populate(_ container: ModelContainer) {
         guard enabled else { return }
+        let arguments = ProcessInfo.processInfo.arguments
+        let appearance = AppearanceManager.shared
+        appearance.matchDevice = false
+        if let index = arguments.firstIndex(of: "-appearance.selectedTheme"), arguments.indices.contains(index + 1),
+           let theme = ReadingTheme(rawValue: arguments[index + 1]) { appearance.selectedTheme = theme }
         let context = container.mainContext
         let folder = Folder(name: "Experiment Book")
         context.insert(folder)

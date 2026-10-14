@@ -224,7 +224,7 @@ public class AudioGenerationManager: ObservableObject {
         }
     }
 
-    public func cancelCurrentGeneration() {
+    public func cancelCurrentGeneration(preservingPlaybackIntent: Bool = false) {
         cancelSpeculativePreparation()
 
         let cancelledSessionID = generationRunState.invalidateCurrent()
@@ -251,7 +251,7 @@ public class AudioGenerationManager: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = false
 
         if let cancelledSessionID {
-            playbackEngine?.finishGeneration(sessionID: cancelledSessionID)
+            playbackEngine?.finishGeneration(sessionID: cancelledSessionID, preservingPlaybackIntent: preservingPlaybackIntent)
         }
     }
 

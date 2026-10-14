@@ -26,40 +26,49 @@ enum ReadingTheme: String, CaseIterable, Identifiable {
 }
 
 class AppearanceManager: ObservableObject {
-    static let shared = AppearanceManager()
+    static let shared: AppearanceManager = {
+        #if DEBUG
+        if UIExperimentFixture.enabled {
+            return AppearanceManager(defaults: UserDefaults(suiteName: "PlumeUIAppearance-\(UUID().uuidString)")!)
+        }
+        #endif
+        return AppearanceManager()
+    }()
+    private let defaults: UserDefaults
     @Published var matchDevice: Bool {
-        didSet { UserDefaults.standard.set(matchDevice, forKey: "appearance.matchDevice") }
+        didSet { defaults.set(matchDevice, forKey: "appearance.matchDevice") }
     }
     @Published var selectedTheme: ReadingTheme {
-        didSet { UserDefaults.standard.set(selectedTheme.rawValue, forKey: "appearance.selectedTheme") }
+        didSet { defaults.set(selectedTheme.rawValue, forKey: "appearance.selectedTheme") }
     }
     @Published var readerFont: ReaderFont {
-        didSet { UserDefaults.standard.set(readerFont.rawValue, forKey: ReaderFont.preferenceKey) }
+        didSet { defaults.set(readerFont.rawValue, forKey: ReaderFont.preferenceKey) }
     }
     @Published var fontSize: Double {
-        didSet { UserDefaults.standard.set(fontSize, forKey: "appearance.fontSize") }
+        didSet { defaults.set(fontSize, forKey: "appearance.fontSize") }
     }
     @Published var isBold: Bool {
-        didSet { UserDefaults.standard.set(isBold, forKey: "appearance.isBold") }
+        didSet { defaults.set(isBold, forKey: "appearance.isBold") }
     }
     @Published var lineSpacing: Double {
-        didSet { UserDefaults.standard.set(lineSpacing, forKey: "appearance.lineSpacing") }
+        didSet { defaults.set(lineSpacing, forKey: "appearance.lineSpacing") }
     }
     
-    private init() {
-        self.matchDevice = UserDefaults.standard.object(forKey: "appearance.matchDevice") as? Bool ?? true
+    private init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.matchDevice = defaults.object(forKey: "appearance.matchDevice") as? Bool ?? true
         
-        if let themeString = UserDefaults.standard.string(forKey: "appearance.selectedTheme"),
+        if let themeString = defaults.string(forKey: "appearance.selectedTheme"),
            let theme = ReadingTheme(rawValue: themeString) {
             self.selectedTheme = theme
         } else {
             self.selectedTheme = .basic
         }
         
-        self.readerFont = ReaderFont.migratedPreference(in: .standard)
-        self.fontSize = UserDefaults.standard.object(forKey: "appearance.fontSize") as? Double ?? 18.0
-        self.isBold = UserDefaults.standard.object(forKey: "appearance.isBold") as? Bool ?? false
-        self.lineSpacing = UserDefaults.standard.object(forKey: "appearance.lineSpacing") as? Double ?? 4.0
+        self.readerFont = ReaderFont.migratedPreference(in: defaults)
+        self.fontSize = defaults.object(forKey: "appearance.fontSize") as? Double ?? 18.0
+        self.isBold = defaults.object(forKey: "appearance.isBold") as? Bool ?? false
+        self.lineSpacing = defaults.object(forKey: "appearance.lineSpacing") as? Double ?? 4.0
     }
     
     func activeTheme(colorScheme: ColorScheme) -> ReadingTheme {

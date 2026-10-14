@@ -200,7 +200,13 @@ extension AudioPlaybackEngine {
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 self.cancelSpeculativeHandback()
-                guard !self.coordinator.isAppleActive, self.currentDocument != nil else { return }
+                guard self.currentDocument != nil else { return }
+                if self.coordinator.isAppleActive {
+                    if self.coordinator.desiredPlayIntent == .playing {
+                        _ = self.coordinator.play()
+                    }
+                    return
+                }
                 Log.audio.info("Application entered background; triggering fallback from Kokoro to Apple Speech.")
                 self.triggerFallbackToAppleSpeech(reason: "Application entered background")
             }

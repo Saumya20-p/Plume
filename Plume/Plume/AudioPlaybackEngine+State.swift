@@ -11,9 +11,9 @@ extension AudioPlaybackEngine {
     public func stopAndRelease() {
         AudioGenerationManager.shared.cancelCurrentGeneration()
         pause()
-        currentSeekTask?.cancel()
-        currentSeekTask = nil
+        cancelPendingSeek()
         clearMemory()
+        coordinator.releaseSession()
         removeTimeObserver()
         removeEndObserver()
         playerTimeControlCancellable?.cancel()

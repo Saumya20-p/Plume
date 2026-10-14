@@ -11,7 +11,7 @@ final class UIExperimentUITests: XCTestCase {
     }
 
     @MainActor private func capture(_ name: String, app: XCUIApplication) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -25,6 +25,10 @@ final class UIExperimentUITests: XCTestCase {
             XCTAssertTrue(app.buttons["Stop Playback and Close Player"].exists)
             XCTAssertTrue(app.otherElements["Playback Position"].exists)
             capture("reader-soft-\(theme)", app: app)
+            app.buttons["Reading Appearance"].tap()
+            XCTAssertTrue(app.buttons["\(theme) theme"].waitForExistence(timeout: 3))
+            XCTAssertTrue(app.buttons["\(theme) theme"].isSelected)
+            app.buttons["Done"].tap()
             app.textViews.firstMatch.swipeUp()
             XCTAssertTrue(app.buttons["Return to Current Word"].waitForExistence(timeout: 3))
             app.buttons["Return to Current Word"].tap()
@@ -41,6 +45,10 @@ final class UIExperimentUITests: XCTestCase {
         capture("appearance-sheet", app: app)
         app.buttons["Done"].tap()
         XCUIDevice.shared.orientation = .landscapeLeft
+        let rotated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.windows.firstMatch.frame.width > app.windows.firstMatch.frame.height
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [rotated], timeout: 5), .completed)
         defer { XCUIDevice.shared.orientation = .portrait }
         XCTAssertTrue(app.buttons["Reading Speed"].waitForExistence(timeout: 3))
         capture("reader-landscape", app: app)
@@ -107,4 +115,51 @@ final class UIExperimentUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Last Year"].exists)
         capture("statistics-year", app: app)
     }
+    @MainActor func testPhysicalPlaybackSeekingAndBackgroundHandoff() throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Metal synthesis and background handoff require a physical iPhone")
+        #else
+        let app = launch(reader: true, extra: ["-voicePreferences.schemaVersion", "1", "-voicePreferences.primary.kind", "kokoro", "-voicePreferences.primary.identifier", "af_heart"])
+        XCTAssertTrue(app.buttons["Play"].waitForExistence(timeout: 5))
+        let position = app.otherElements["Playback Position"]
+        let originalValue = position.value as? String ?? ""
+        print("Playback initial value:", String(describing: position.value))
+        app.buttons["Play"].tap()
+        let progressed = NSPredicate { _, _ in
+            let value = position.value as? String ?? ""
+            return !value.isEmpty && value != originalValue
+        }
+        let started = XCTNSPredicateExpectation(predicate: progressed, object: nil)
+        let result = XCTWaiter.wait(for: [started], timeout: 45)
+        print("Playback final value:", String(describing: position.value))
+        print(app.debugDescription)
+        capture("device-playback-diagnostic", app: app)
+        XCTAssertEqual(result, .completed)
+        XCTAssertFalse(app.alerts["Generation Error"].exists)
+        app.buttons["Skip Forward 15 Seconds"].tap()
+        capture("device-playing-and-seeking", app: app)
+        for _ in 0..<2 {
+            let before = position.value as? String ?? ""
+            XCUIDevice.shared.press(.home)
+            // The handoff needs a real background interval, independent of UI idleness.
+            let interval = expectation(description: "Background interval")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { interval.fulfill() }
+            wait(for: [interval], timeout: 7)
+            app.activate()
+            XCTAssertFalse(app.alerts["Generation Error"].exists)
+            let advancing = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                (position.value as? String ?? "") != before
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [advancing], timeout: 15), .completed)
+        }
+        app.buttons["Pause Playback"].tap()
+        app.buttons["Reading Appearance"].tap()
+        XCTAssertTrue(app.switches["Bold Font"].waitForExistence(timeout: 3))
+        app.buttons["Done"].tap()
+        capture("device-returned-and-paused", app: app)
+        app.buttons["Stop Playback and Close Player"].tap()
+        XCTAssertTrue(app.buttons["Add to Library"].waitForExistence(timeout: 5))
+        #endif
+    }
+
 }

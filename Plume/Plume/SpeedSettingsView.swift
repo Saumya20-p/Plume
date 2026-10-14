@@ -7,6 +7,7 @@ struct SpeedSettingsView: View {
     
     @AppStorage("autoIncreaseSpeedEnabled") private var autoIncreaseSpeedEnabled: Bool = false
     
+    @ScaledMetric(relativeTo: .body) private var presetMinimumWidth: CGFloat = 90
     private let presets: [Float] = [0.8, 1.0, 1.2, 1.5, 2.0, 2.5]
     
     private var speedLabel: String {
@@ -55,7 +56,10 @@ struct SpeedSettingsView: View {
                         Text(remainingDurationString)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
+                    .padding(.horizontal, 24)
                     .padding(.top, 16)
                     
                     // Stepper
@@ -94,21 +98,11 @@ struct SpeedSettingsView: View {
                         .accessibilityLabel("Increase reading speed")
                     }
                     
-                    // Presets Grid
-                    VStack(spacing: 12) {
-                        HStack(spacing: 12) {
-                            ForEach(presets[0..<3], id: \.self) { rate in
-                                presetButton(rate: rate)
-                            }
-                        }
-                        HStack(spacing: 12) {
-                            ForEach(presets[3..<6], id: \.self) { rate in
-                                presetButton(rate: rate)
-                            }
-                        }
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: presetMinimumWidth), spacing: 12)], spacing: 12) {
+                        ForEach(presets, id: \.self) { rate in presetButton(rate: rate) }
                     }
                     .padding(.horizontal, 24)
-                    
+
                     // Auto-Increase Toggle
                     VStack(spacing: 16) {
                         Divider()
