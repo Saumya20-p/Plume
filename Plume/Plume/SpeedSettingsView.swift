@@ -43,10 +43,9 @@ struct SpeedSettingsView: View {
     
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.clear.ignoresSafeArea()
+            ScrollView {
                 
-                VStack(spacing: 32) {
+                VStack(spacing: 24) {
                     // Header
                     VStack(spacing: 4) {
                         Text(speedLabel)
@@ -60,7 +59,7 @@ struct SpeedSettingsView: View {
                     .padding(.top, 16)
                     
                     // Stepper
-                    HStack(spacing: 40) {
+                    HStack(spacing: 24) {
                         Button {
                             let newRate = max(0.75, engine.basePlaybackSpeed - 0.1)
                             setSpeed(newRate)
@@ -73,6 +72,7 @@ struct SpeedSettingsView: View {
                         }
                         .foregroundStyle(.primary)
                         .disabled(engine.basePlaybackSpeed <= 0.75)
+                        .accessibilityLabel("Decrease reading speed")
                         
                         Text(String(format: "%.1f×", engine.playbackRate))
                             .font(.system(size: 40, weight: .bold))
@@ -91,6 +91,7 @@ struct SpeedSettingsView: View {
                         }
                         .foregroundStyle(.primary)
                         .disabled(engine.basePlaybackSpeed >= 3.0)
+                        .accessibilityLabel("Increase reading speed")
                     }
                     
                     // Presets Grid
@@ -127,7 +128,9 @@ struct SpeedSettingsView: View {
                     }
                     .padding(.top, 12)
                 }
+                .padding(.bottom, 24)
             }
+            .navigationTitle("Speed")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -138,8 +141,8 @@ struct SpeedSettingsView: View {
             }
         }
         .presentationBackground(.ultraThinMaterial)
-        .presentationBackgroundInteraction(.enabled(upThrough: .height(420)))
-        .presentationDetents([.height(420)])
+        .presentationBackgroundInteraction(.disabled)
+        .presentationDetents([.height(420), .large])
         .presentationDragIndicator(.visible)
     }
     
@@ -158,6 +161,8 @@ struct SpeedSettingsView: View {
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(String(format: "%.1f times speed", rate))
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
     
     private func setSpeed(_ rate: Float) {

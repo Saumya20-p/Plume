@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct AppearanceSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var appearanceManager: AppearanceManager
     
@@ -16,17 +17,17 @@ struct AppearanceSettingsView: View {
                     HStack(spacing: 12) {
                         ThemeCard(
                             theme: .basic,
-                            isSelected: appearanceManager.selectedTheme == .basic,
+                            isSelected: appearanceManager.activeTheme(colorScheme: colorScheme) == .basic,
                             action: { selectTheme(.basic) }
                         )
                         ThemeCard(
                             theme: .warm,
-                            isSelected: appearanceManager.selectedTheme == .warm,
+                            isSelected: appearanceManager.activeTheme(colorScheme: colorScheme) == .warm,
                             action: { selectTheme(.warm) }
                         )
                         ThemeCard(
                             theme: .muted,
-                            isSelected: appearanceManager.selectedTheme == .muted,
+                            isSelected: appearanceManager.activeTheme(colorScheme: colorScheme) == .muted,
                             action: { selectTheme(.muted) }
                         )
                     }
@@ -35,8 +36,8 @@ struct AppearanceSettingsView: View {
                 }
                 
                 Section(header: Text("Font")) {
-                    Picker("Font Style", selection: $appearanceManager.fontStyle) {
-                        ForEach(FontStyle.allCases) { style in
+                    Picker("Reading Font", selection: $appearanceManager.readerFont) {
+                        ForEach(ReaderFont.allCases) { style in
                             Text(style.rawValue).tag(style)
                         }
                     }
@@ -48,6 +49,8 @@ struct AppearanceSettingsView: View {
                             Text("A")
                                 .font(.system(size: 14))
                             Slider(value: $appearanceManager.fontSize, in: 12...36, step: 1)
+                                .accessibilityLabel("Reading font size")
+                                .accessibilityValue("\(Int(appearanceManager.fontSize)) points")
                             Text("A")
                                 .font(.system(size: 24))
                         }
@@ -59,6 +62,8 @@ struct AppearanceSettingsView: View {
                             Image(systemName: "line.3.horizontal")
                                 .font(.system(size: 14))
                             Slider(value: $appearanceManager.lineSpacing, in: 0...20, step: 1)
+                                .accessibilityLabel("Line spacing")
+                                .accessibilityValue("\(Int(appearanceManager.lineSpacing)) points")
                             Image(systemName: "arrow.up.and.down.text.horizontal")
                                 .font(.system(size: 20))
                         }
@@ -70,7 +75,6 @@ struct AppearanceSettingsView: View {
             }
             .scrollContentBackground(.hidden)
             .background(Color.clear)
-            .scrollDisabled(true)
             .navigationTitle("Appearance")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -82,8 +86,9 @@ struct AppearanceSettingsView: View {
             }
         }
         .presentationBackground(.ultraThinMaterial)
-        .presentationBackgroundInteraction(.enabled(upThrough: .height(650)))
-        .presentationDetents([.height(650)])
+        .presentationBackgroundInteraction(.disabled)
+        .presentationDetents([.height(650), .large])
+        .presentationDragIndicator(.visible)
     }
     
     private func selectTheme(_ theme: ReadingTheme) {
@@ -129,6 +134,8 @@ struct ThemeCard: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(theme.rawValue) theme")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 

@@ -1,24 +1,6 @@
 import SwiftUI
 import Combine
 
-enum FontStyle: String, CaseIterable, Identifiable {
-    case system = "System"
-    case serif = "Serif"
-    case rounded = "Rounded"
-    case monospaced = "Monospaced"
-    
-    var id: String { rawValue }
-    
-    var design: Font.Design {
-        switch self {
-        case .system: return .default
-        case .serif: return .serif
-        case .rounded: return .rounded
-        case .monospaced: return .monospaced
-        }
-    }
-}
-
 enum ReadingTheme: String, CaseIterable, Identifiable {
     case basic = "Basic"
     case warm = "Warm"
@@ -37,7 +19,7 @@ enum ReadingTheme: String, CaseIterable, Identifiable {
     var textColor: Color {
         switch self {
         case .basic: return Color(hex: "#F1ECE6") // Alabaster Cream
-        case .warm: return Color(hex: "#AF3E4D") // Lively Rosewood
+        case .warm: return Color(hex: "#47382F") // Deep warm brown
         case .muted: return Color(hex: "#D8D0C8") // Brightened Warm Greige
         }
     }
@@ -51,11 +33,8 @@ class AppearanceManager: ObservableObject {
     @Published var selectedTheme: ReadingTheme {
         didSet { UserDefaults.standard.set(selectedTheme.rawValue, forKey: "appearance.selectedTheme") }
     }
-    @Published var fontFamily: String {
-        didSet { UserDefaults.standard.set(fontFamily, forKey: "appearance.fontFamily") }
-    }
-    @Published var fontStyle: FontStyle {
-        didSet { UserDefaults.standard.set(fontStyle.rawValue, forKey: "appearance.fontStyle") }
+    @Published var readerFont: ReaderFont {
+        didSet { UserDefaults.standard.set(readerFont.rawValue, forKey: ReaderFont.preferenceKey) }
     }
     @Published var fontSize: Double {
         didSet { UserDefaults.standard.set(fontSize, forKey: "appearance.fontSize") }
@@ -77,14 +56,7 @@ class AppearanceManager: ObservableObject {
             self.selectedTheme = .basic
         }
         
-        self.fontFamily = UserDefaults.standard.string(forKey: "appearance.fontFamily") ?? "Georgia"
-        
-        if let styleString = UserDefaults.standard.string(forKey: "appearance.fontStyle"),
-           let style = FontStyle(rawValue: styleString) {
-            self.fontStyle = style
-        } else {
-            self.fontStyle = .system
-        }
+        self.readerFont = ReaderFont.migratedPreference(in: .standard)
         self.fontSize = UserDefaults.standard.object(forKey: "appearance.fontSize") as? Double ?? 18.0
         self.isBold = UserDefaults.standard.object(forKey: "appearance.isBold") as? Bool ?? false
         self.lineSpacing = UserDefaults.standard.object(forKey: "appearance.lineSpacing") as? Double ?? 4.0
