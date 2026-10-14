@@ -24,8 +24,6 @@ struct LibraryView: View {
     @ObservedObject private var generationManager = AudioGenerationManager.shared
     @ObservedObject private var playbackEngine = AudioPlaybackEngine.shared
     
-    @State private var showingCreateFolder = false
-    @State private var newFolderName = ""
     
     @State private var searchText = ""
     @State private var isSearchVisible = false
@@ -62,41 +60,6 @@ struct LibraryView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Custom Header
-                HStack {
-                    Text("Library")
-                        .font(.largeTitle.bold())
-                        .tracking(-0.5)
-                    Spacer()
-                    HStack(spacing: 20) {
-                        Button { onAdd(nil) } label: { Image(systemName: "plus") }
-                            .accessibilityLabel("Add to Library")
-                        Button {
-                            showingCreateFolder = true
-                        } label: {
-                            Image(systemName: "folder.badge.plus")
-                        }
-                        Button {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                isSearchVisible.toggle()
-                                if !isSearchVisible {
-                                    searchText = ""
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                        }
-                        NavigationLink(destination: SettingsView()) {
-                            Image(systemName: "gearshape")
-                        }
-                    }
-                    .font(.title3)
-                    .foregroundStyle(.primary)
-                }
-                .padding(.horizontal)
-                .padding(.top, 8)
-                .padding(.bottom, isSearchVisible ? 8 : 16)
-                
                 if isSearchVisible {
                     HStack {
                         Image(systemName: "magnifyingglass")
@@ -109,7 +72,9 @@ struct LibraryView: View {
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                                     .foregroundColor(.secondary)
+                                    .frame(minWidth: 44, minHeight: 44)
                             }
+                            .accessibilityLabel("Clear Search")
                         }
                     }
                     .padding(8)
@@ -210,7 +175,28 @@ struct LibraryView: View {
                     .listStyle(.insetGrouped)
                 }
             }
-            .toolbar(.hidden, for: .navigationBar)
+            .navigationTitle("Library")
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { onAdd(nil) } label: {
+                        Image(systemName: "plus").frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel("Add to Library")
+                    Button {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            isSearchVisible.toggle()
+                            if !isSearchVisible { searchText = "" }
+                        }
+                    } label: {
+                        Image(systemName: "magnifyingglass").frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel(isSearchVisible ? "Close Search" : "Search All Chapters")
+                    NavigationLink(destination: SettingsView()) {
+                        Image(systemName: "gearshape").frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel("Settings")
+                }
+            }
             .onAppear {
                 autoPurge()
                 checkSharedItems()
@@ -226,15 +212,7 @@ struct LibraryView: View {
                 }
                 Button("Cancel", role: .cancel) { }
             } message: { Text(sharedImportError) }
-            .alert("New Folder", isPresented: $showingCreateFolder) {
-                TextField("Folder Name", text: $newFolderName)
-                Button("Cancel", role: .cancel) { newFolderName = "" }
-                Button("Create") {
-                    let trimmed = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty { modelContext.insert(Folder(name: trimmed)) }
-                    newFolderName = ""
-                }
-            }
+
         }
     }
     
