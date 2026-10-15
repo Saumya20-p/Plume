@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// Keeps the reading surface, progressive material veil, and dock in one hierarchy.
+/// Keeps the reading surface, progressive foreground blur, and dock in one hierarchy.
 struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
     let text: String
     let currentWord: WordTimestamp?
@@ -30,6 +30,9 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         controller.loadViewIfNeeded()
         controller.textView.delegate = context.coordinator
         context.coordinator.textView = controller.textView
+        context.coordinator.onReaderScroll = { [weak controller] in
+            controller?.synchronizeBlurredTextOffset()
+        }
         controller.onReaderLayout = { [weak coordinator = context.coordinator] in
             guard let coordinator, !coordinator.follow.isBrowsing,
                   coordinator.parent.canAutoResume || coordinator.lastScrolledWordCharIndex == -1 else { return }
@@ -67,9 +70,9 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         if rebuilt {
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = CGFloat(lineSpacing)
-            textView.attributedText = NSAttributedString(string: text, attributes: [
+            textView.textStorage.setAttributedString(NSAttributedString(string: text, attributes: [
                 .font: font, .foregroundColor: textColor, .paragraphStyle: paragraph
-            ])
+            ]))
             coordinator.lastText = text
             coordinator.lastFont = font
             coordinator.lastLineSpacing = lineSpacing
@@ -138,6 +141,7 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         controller.textView.delegate = nil
         controller.onReaderLayout = nil
         coordinator.textView = nil
+        coordinator.onReaderScroll = nil
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -165,6 +169,7 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
     @MainActor final class Coordinator: NSObject, UITextViewDelegate {
         var parent: PlayableTextView
         weak var textView: UITextView?
+        var onReaderScroll: (() -> Void)?
         var follow = ReaderFollowContract()
         var resumeTask: Task<Void, Never>?
         var scheduledRevision: Int?
@@ -238,6 +243,8 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
             textView.setContentOffset(CGPoint(x: 0, y: target), animated: !parent.reduceMotion && !UIAccessibility.isVoiceOverRunning)
         }
 
+        func scrollViewDidScroll(_ scrollView: UIScrollView) { onReaderScroll?() }
+
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
             cancelResume()
             follow.beginInteraction()
@@ -279,11 +286,13 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
     let textView = UITextView()
     let controlsHost: UIHostingController<Controls>
     var onReaderLayout: (() -> Void)?
-    private let veil = UIVisualEffectView(effect: UIBlurEffect(style: .regular))
-    private let veilMask = ReaderGradientView()
+    private let sharpTextContainer = UIView()
+    private let sharpMask = ReaderGradientView()
+    private let blurMask = ReaderGradientView()
+    private var blurredTextHost: UIHostingController<ReaderBlurredText>?
+    private var mirroredTextView: UITextView?
     private var headerClearance: CGFloat = 0
     private var reportedDockHeight: CGFloat = 0
-    private var maskTransitionFraction: CGFloat = -1
 
     init(controls: Controls) {
         controlsHost = UIHostingController(rootView: controls)
@@ -294,20 +303,15 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        sharpTextContainer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(sharpTextContainer)
         textView.isEditable = false
         textView.isSelectable = false
         textView.backgroundColor = .clear
         textView.contentInsetAdjustmentBehavior = .never
         textView.showsVerticalScrollIndicator = false
         textView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(textView)
-
-        // The effect itself is masked; its ancestors remain unmasked and opaque.
-        veil.alpha = 1
-        veil.isUserInteractionEnabled = false
-        let dockMaskColor = UIColor.black.withAlphaComponent(0.97).cgColor
-        veilMask.gradient.colors = [UIColor.clear.cgColor, dockMaskColor, dockMaskColor]
-        view.addSubview(veil)
+        sharpTextContainer.addSubview(textView)
 
         addChild(controlsHost)
         controlsHost.sizingOptions = .intrinsicContentSize
@@ -316,10 +320,14 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         view.addSubview(controlsHost.view)
         controlsHost.didMove(toParent: self)
         NSLayoutConstraint.activate([
-            textView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            textView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            textView.topAnchor.constraint(equalTo: view.topAnchor),
-            textView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            sharpTextContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            sharpTextContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            sharpTextContainer.topAnchor.constraint(equalTo: view.topAnchor),
+            sharpTextContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            textView.leadingAnchor.constraint(equalTo: sharpTextContainer.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: sharpTextContainer.trailingAnchor),
+            textView.topAnchor.constraint(equalTo: sharpTextContainer.topAnchor),
+            textView.bottomAnchor.constraint(equalTo: sharpTextContainer.bottomAnchor),
             controlsHost.view.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
             controlsHost.view.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
             controlsHost.view.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
@@ -334,8 +342,75 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         self.headerClearance = max(0, headerClearance)
         reportedDockHeight = max(0, dockHeight)
         view.backgroundColor = backgroundColor
-        veil.isHidden = reduceTransparency
+        if reduceTransparency {
+            removeBlurredText()
+        } else if blurredTextHost == nil {
+            installBlurredText()
+        }
         view.setNeedsLayout()
+    }
+
+    private func installBlurredText() {
+        // Share characters and attributes, including playback highlights, rather
+        // than copying the transcript on every spoken word. Only layout is separate.
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: textView.textContainer.size)
+        textContainer.lineFragmentPadding = textView.textContainer.lineFragmentPadding
+        textContainer.widthTracksTextView = textView.textContainer.widthTracksTextView
+        textContainer.heightTracksTextView = textView.textContainer.heightTracksTextView
+        textContainer.exclusionPaths = textView.textContainer.exclusionPaths
+        layoutManager.addTextContainer(textContainer)
+        textView.textStorage.addLayoutManager(layoutManager)
+        let mirror = UITextView(frame: .zero, textContainer: textContainer)
+        mirror.isEditable = false
+        mirror.isSelectable = false
+        mirror.isUserInteractionEnabled = false
+        mirror.isAccessibilityElement = false
+        mirror.accessibilityElementsHidden = true
+        mirror.backgroundColor = .clear
+        mirror.isOpaque = false
+        mirror.contentInsetAdjustmentBehavior = .never
+        mirror.showsVerticalScrollIndicator = false
+        mirror.showsHorizontalScrollIndicator = false
+        mirror.topEdgeEffect.isHidden = true
+        mirror.bottomEdgeEffect.isHidden = true
+        mirroredTextView = mirror
+
+        let host = UIHostingController(rootView: ReaderBlurredText(textView: mirror))
+        host.safeAreaRegions = []
+        host.view.backgroundColor = .clear
+        host.view.isOpaque = false
+        host.view.isUserInteractionEnabled = false
+        host.view.accessibilityElementsHidden = true
+        addChild(host)
+        view.insertSubview(host.view, belowSubview: controlsHost.view)
+        host.didMove(toParent: self)
+        blurredTextHost = host
+        sharpMask.gradient.colors = [UIColor.black.cgColor, UIColor.black.cgColor, UIColor.clear.cgColor, UIColor.clear.cgColor]
+        blurMask.gradient.colors = [UIColor.clear.cgColor, UIColor.black.cgColor, UIColor.black.cgColor]
+        sharpTextContainer.mask = sharpMask
+        host.view.mask = blurMask
+    }
+
+    private func removeBlurredText() {
+        sharpTextContainer.mask = nil
+        guard let host = blurredTextHost else { return }
+        host.willMove(toParent: nil)
+        host.view.removeFromSuperview()
+        host.removeFromParent()
+        if let mirror = mirroredTextView {
+            textView.textStorage.removeLayoutManager(mirror.layoutManager)
+        }
+        blurredTextHost = nil
+        mirroredTextView = nil
+    }
+
+    func synchronizeBlurredTextOffset() {
+        guard let host = blurredTextHost, let mirror = mirroredTextView else { return }
+        // The mirror renders only the lower viewport. Its text coordinates remain
+        // identical to the reader's after accounting for that viewport's origin.
+        let offset = CGPoint(x: textView.contentOffset.x, y: textView.contentOffset.y + host.view.frame.minY)
+        if mirror.contentOffset != offset { mirror.setContentOffset(offset, animated: false) }
     }
 
     override func viewDidLayoutSubviews() {
@@ -345,25 +420,49 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         let dockHeight = max(0, view.bounds.maxY - controlsHost.view.frame.minY)
         let inset = UIEdgeInsets(top: max(headerClearance, view.safeAreaInsets.top) + 16, left: 16, bottom: dockHeight + 24, right: 16)
         if textView.textContainerInset != inset { textView.textContainerInset = inset }
-        let effectiveDockHeight = reportedDockHeight > 0 ? reportedDockHeight : controlsHost.view.bounds.height
-        let dockTop = controlsHost.view.frame.maxY - effectiveDockHeight
-        let start = min(view.bounds.maxY, max(headerClearance + 16, dockTop - 72))
-        let veilFrame = CGRect(x: view.bounds.minX, y: start, width: view.bounds.width, height: max(0, view.bounds.maxY - start))
-        let transitionFraction = min(1, max(0, (dockTop - start) / max(1, veilFrame.height)))
-        if veil.frame != veilFrame || maskTransitionFraction != transitionFraction || veil.mask == nil {
-            veil.frame = veilFrame
-            veilMask.frame = veil.bounds
-            // A mask blends the fixed blur with the sharp text underneath.
-            // Finish the ramp above the dock, leaving only a faint trace of line structure.
-            veilMask.gradient.locations = [0, NSNumber(value: Double(transitionFraction)), 1]
-            maskTransitionFraction = transitionFraction
-            veilMask.layoutIfNeeded()
-            // UIKit copies effect masks. Reassign after resizing the original.
-            veil.mask = nil
-            veil.mask = veilMask
+        if let host = blurredTextHost, let mirror = mirroredTextView {
+            let effectiveDockHeight = reportedDockHeight > 0 ? reportedDockHeight : controlsHost.view.bounds.height
+            let dockTop = controlsHost.view.frame.maxY - effectiveDockHeight
+            let start = min(view.bounds.maxY, max(headerClearance + 16, dockTop - 72))
+            let transitionEnd = min(view.bounds.maxY, max(start, dockTop))
+            let blurFrame = CGRect(x: view.bounds.minX, y: start, width: view.bounds.width, height: max(0, view.bounds.maxY - start))
+            if host.view.frame != blurFrame { host.view.frame = blurFrame }
+            if mirror.textContainerInset != inset { mirror.textContainerInset = inset }
+            host.view.layoutIfNeeded()
+
+            // These complementary masks change only text pixels. Unlike a
+            // backdrop material, the blur cannot tint the solid reading theme.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            sharpMask.frame = sharpTextContainer.bounds
+            sharpMask.gradient.locations = [0, NSNumber(value: Double(start / max(1, view.bounds.height))), NSNumber(value: Double(transitionEnd / max(1, view.bounds.height))), 1]
+            blurMask.frame = host.view.bounds
+            blurMask.gradient.locations = [0, NSNumber(value: Double(min(1, max(0, (transitionEnd - start) / max(1, blurFrame.height))))), 1]
+            CATransaction.commit()
+            synchronizeBlurredTextOffset()
         }
         onReaderLayout?()
     }
+}
+
+/// SwiftUI supplies a public foreground Gaussian blur; UIKit remains responsible
+/// for identical text layout and scrolling. The transparent background is never blurred.
+@MainActor private struct ReaderBlurredText: View {
+    let textView: UITextView
+
+    var body: some View {
+        ReaderTextMirror(textView: textView)
+            .blur(radius: 4)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+@MainActor private struct ReaderTextMirror: UIViewRepresentable {
+    let textView: UITextView
+
+    func makeUIView(context: Context) -> UITextView { textView }
+    func updateUIView(_ uiView: UITextView, context: Context) {}
 }
 
 @MainActor private final class ReaderGradientView: UIView {
