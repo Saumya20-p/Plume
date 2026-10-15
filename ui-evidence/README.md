@@ -1,5 +1,7 @@
 # UI experiment evidence
 
+Latest: [player-polish](player-polish/README.md) contains the seven player refinements, final iOS 26.5/27 screenshots and scrolling recording. These supersede earlier caption sizing, veil, header-edge, and timeline captures. Current physical verification is deferred; see [the latest report](../UI_PLAYER_POLISH.md).
+
 The subsequent five player corrections, final screenshots, and scrolling recording are in [player-restoration](player-restoration/README.md); those captures supersede the earlier reader-edge and exit-icon choices here.
 
 Captured October 14, 2026 from isolated fixture data. These files document rendered behavior, not exhaustive device/accessibility certification. See [the implementation ledger](../UI_IMPLEMENTATION_LEDGER.md) for open gates and source changes.

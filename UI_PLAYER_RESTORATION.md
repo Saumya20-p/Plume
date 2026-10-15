@@ -1,5 +1,7 @@
 # Focused player restoration
 
+Historical five-correction baseline. The subsequent seven refinements and current verification limits are in [UI_PLAYER_POLISH.md](UI_PLAYER_POLISH.md); that report supersedes this report's caption sizing, material veil, header edge, and timeline layout. Physical results below apply to the earlier baseline.
+
 Branch: `experiment/ios27-ui-ux`. Minimum OS: iOS 26. This follow-up implements only the five requested player corrections after the broader experiment at `de33af9`. Main and `checkpoint/antigravity-complete` remain at `2709f20`; no merge occurred.
 
 ## Five corrections

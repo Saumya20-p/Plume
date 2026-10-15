@@ -38,9 +38,17 @@ enum UIExperimentFixture {
         try? context.save()
         if ProcessInfo.processInfo.arguments.contains("--ui-experiment-reader") {
             let engine = AudioPlaybackEngine.shared
+            let restoreSavedPosition = arguments.contains("--ui-experiment-restored-position")
+            if restoreSavedPosition {
+                let chapter = document.bodyText as NSString
+                document.lastReadCharIndex = chapter.range(of: "Paragraph 8. ").location +
+                    "Paragraph 8. The river moved slowly beneath the old bridge. ".utf16.count
+            }
             engine.load(document: document)
             engine.pause()
-            PlaybackProgress.shared.currentWord = WordTimestamp(word: "The", startTime: 0, endTime: 1, rangeLocation: 13, rangeLength: 3)
+            PlaybackProgress.shared.currentWord = restoreSavedPosition ?
+                WordTimestamp(word: "", startTime: 0, endTime: 0, rangeLocation: document.lastReadCharIndex, rangeLength: 0) :
+                WordTimestamp(word: "The", startTime: 0, endTime: 1, rangeLocation: 13, rangeLength: 3)
             if arguments.contains("--ui-experiment-position") {
                 engine.currentTime = 60
                 engine.duration = 120

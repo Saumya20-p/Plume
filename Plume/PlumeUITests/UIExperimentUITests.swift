@@ -18,6 +18,33 @@ final class UIExperimentUITests: XCTestCase {
         add(attachment)
     }
 
+    @MainActor private func browseReader(_ app: XCUIApplication) {
+        // UITextView extends beneath the header and dock; drag only the passage.
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55))
+            .press(forDuration: 0.1, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)))
+    }
+
+    @MainActor func testSavedPositionAndCompactReturn() throws {
+        for theme in ["Basic", "Warm", "Muted"] {
+            let app = launch(reader: true, theme: theme, extra: ["--ui-experiment-restored-position", "--ui-experiment-position"])
+            XCTAssertTrue(app.buttons["Play"].waitForExistence(timeout: 5), "Saved position must resolve before pressing Play")
+            capture("saved-before-play-\(theme)", app: app)
+            browseReader(app)
+            let button = app.buttons["Return to Current Word"]
+            XCTAssertTrue(button.waitForExistence(timeout: 3))
+            XCTAssertEqual(button.value as? String, "Morning")
+            XCTAssertGreaterThanOrEqual(button.frame.height, 44)
+            XCTAssertLessThan(button.frame.width, app.windows.firstMatch.frame.width * 0.8)
+            XCTAssertEqual(button.frame.midX, app.windows.firstMatch.frame.midX, accuracy: 1)
+            capture("saved-compact-return-\(theme)", app: app)
+            button.tap()
+            XCTAssertTrue(button.waitForNonExistence(timeout: 3))
+            XCTAssertTrue(app.buttons["Play"].exists)
+            app.terminate()
+        }
+    }
+
     @MainActor func testReaderThemesAndPausedReturn() throws {
         for theme in ["Basic", "Warm", "Muted"] {
             let app = launch(reader: true, theme: theme, extra: ["--ui-experiment-position"])
@@ -30,11 +57,12 @@ final class UIExperimentUITests: XCTestCase {
             XCTAssertTrue(app.buttons["\(theme) theme"].waitForExistence(timeout: 3))
             XCTAssertTrue(app.buttons["\(theme) theme"].isSelected)
             app.buttons["Done"].tap()
-            app.textViews.firstMatch.swipeUp()
+            browseReader(app)
             XCTAssertTrue(app.buttons["Return to Current Word"].waitForExistence(timeout: 3))
             let returnButton = app.buttons["Return to Current Word"]
             XCTAssertEqual(returnButton.value as? String, "The")
             XCTAssertGreaterThanOrEqual(returnButton.frame.height, 44)
+            XCTAssertLessThan(returnButton.frame.width, app.windows.firstMatch.frame.width * 0.8)
             capture("reader-return-word-\(theme)", app: app)
             returnButton.tap()
             XCTAssertTrue(app.buttons["Return to Current Word"].waitForNonExistence(timeout: 3))
@@ -48,9 +76,7 @@ final class UIExperimentUITests: XCTestCase {
             XCTAssertTrue(app.buttons["Reading Appearance"].waitForExistence(timeout: 5))
             // The text view extends beneath the header and dock. Keep this
             // gesture within the unobscured passage, away from toolbar controls.
-            let window = app.windows.firstMatch
-            window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55))
-                .press(forDuration: 0.1, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)))
+            browseReader(app)
             XCTAssertFalse(app.buttons["Done"].exists, "Reader browsing must not open a settings sheet")
             let button = app.buttons["Return to Current Word"]
             XCTAssertTrue(button.waitForExistence(timeout: 3))
@@ -90,6 +116,15 @@ final class UIExperimentUITests: XCTestCase {
         let app = launch(reader: true, extra: ["--ui-experiment-large-text"])
         XCTAssertTrue(app.buttons["Reading Appearance"].waitForExistence(timeout: 5))
         capture("reader-largest-text", app: app)
+        browseReader(app)
+        let returnButton = app.buttons["Return to Current Word"]
+        XCTAssertTrue(returnButton.waitForExistence(timeout: 3))
+        XCTAssertEqual(returnButton.value as? String, "The")
+        XCTAssertGreaterThanOrEqual(returnButton.frame.height, 44)
+        XCTAssertLessThanOrEqual(returnButton.frame.width, app.windows.firstMatch.frame.width - 32)
+        capture("reader-largest-return", app: app)
+        returnButton.tap()
+        XCTAssertTrue(returnButton.waitForNonExistence(timeout: 3))
         app.buttons["Reading Appearance"].tap()
         for _ in 0..<4 where !app.switches["Bold Font"].isHittable { app.swipeUp() }
         XCTAssertTrue(app.switches["Bold Font"].isHittable)
@@ -180,8 +215,10 @@ final class UIExperimentUITests: XCTestCase {
             XCTAssertEqual(XCTWaiter.wait(for: [advancing], timeout: 15), .completed)
         }
         let beforeScrubbing = position.value as? String
-        let scrubStart = position.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.25))
-        let scrubEnd = position.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.25))
+        // The compact dock leaves the curved top rim above the queue/X targets.
+        // Exercise that strip, rather than dragging across the queue button.
+        let scrubStart = position.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.05))
+        let scrubEnd = position.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.05))
         scrubStart.press(forDuration: 0.1, thenDragTo: scrubEnd)
         let scrubbed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             (position.value as? String) != beforeScrubbing
@@ -190,7 +227,7 @@ final class UIExperimentUITests: XCTestCase {
         XCTAssertFalse(app.alerts["Generation Error"].exists)
         XCTAssertTrue(app.buttons["Pause Playback"].waitForExistence(timeout: 5))
         capture("device-edge-slider", app: app)
-        app.textViews.firstMatch.swipeUp()
+        browseReader(app)
         let returnButton = app.buttons["Return to Current Word"]
         XCTAssertTrue(returnButton.waitForExistence(timeout: 1))
         let wordFrame = returnButton.frame
@@ -205,10 +242,10 @@ final class UIExperimentUITests: XCTestCase {
         XCTAssertEqual(returnButton.frame.minY, wordFrame.minY, accuracy: 1)
         returnButton.tap()
         XCTAssertTrue(returnButton.waitForNonExistence(timeout: 2))
-        app.textViews.firstMatch.swipeUp()
+        browseReader(app)
         XCTAssertTrue(returnButton.waitForExistence(timeout: 1))
         XCTAssertTrue(returnButton.waitForNonExistence(timeout: 6), "Playing automatically returns after inactivity")
-        app.textViews.firstMatch.swipeUp()
+        browseReader(app)
         XCTAssertTrue(returnButton.waitForExistence(timeout: 1))
         app.buttons["Pause Playback"].tap()
         let pausedWord = returnButton.value as? String

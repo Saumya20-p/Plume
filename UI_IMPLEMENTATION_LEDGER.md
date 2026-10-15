@@ -1,5 +1,7 @@
 # UI implementation ledger
 
+Latest player follow-up: [UI_PLAYER_POLISH.md](UI_PLAYER_POLISH.md) records the seven refinements, final simulator evidence, and model usage. Its current device/accessibility gates supersede earlier player verification claims for this revision; the phone test was deferred while locked at the user's request.
+
 Experiment: `experiment/ios27-ui-ux`. Baseline and `checkpoint/antigravity-complete`: `2709f20`. Minimum OS: iOS 26. Main remains at the baseline; no merge is authorized. SwiftData persisted fields and relationships are unchanged.
 
 This records implementation separately from verification against [UI_DESIGN_AUDIT.md](UI_DESIGN_AUDIT.md). The subsequent five player corrections are recorded in [UI_PLAYER_RESTORATION.md](UI_PLAYER_RESTORATION.md); that report supersedes the earlier reader-edge and exit-icon choices below. The user's accepted plan overrides C10's original recommendation: automatic return remains, after three seconds of inactivity with suspension and stale-callback protection.
@@ -21,7 +23,7 @@ This records implementation separately from verification against [UI_DESIGN_AUDI
 | C11 Effective theme | [AppearanceSettings.swift](Plume/Plume/AppearanceSettings.swift): effective Match Device theme drives displayed selection; manual preference retained. | Corrected fixture asserts selected trait for each of Basic/Warm/Muted. Earlier launch-argument-only theme evidence was invalid and replaced. |
 | C12 Deletion | [DocumentDeletion.swift](Plume/Plume/DocumentDeletion.swift): permanent wording, queue removal, missing-entry skipping, current playback release, writer drain before deleting data. Auto-purge shares the same path. | Queue and isolated permanent-deletion tests passed, including an outstanding writer. Full destructive UI confirmation flow has not been automated. |
 | Visual 1 Warm contrast | Dark brown reader text and subtle brown paragraph tint, accent/white active word retained. | Correct three-theme screenshots reviewed; physical highlight captured. |
-| Visual 2 Reader/player edge | Native UITextView and contained UIHostingController retained; measured dock clearance and one public gradient-masked material restore the intentional progressive veil. Native bottom edge disabled to avoid overlap. | Final follow-up screenshots, recordings, and checks are in [UI_PLAYER_RESTORATION.md](UI_PLAYER_RESTORATION.md). |
+| Visual 2 Reader/player edge | Native UITextView and contained UIHostingController retained; measured dock clearance and a shared-text foreground blur preserve the theme background. Native top edge is soft; bottom edge disabled to avoid overlap. | Latest screenshots, recording, checks, and open device gate are in [UI_PLAYER_POLISH.md](UI_PLAYER_POLISH.md). |
 | Visual 3 Player exits | Minimize uses down chevron; X releases playback and closes player. | Physical follow-up tested X release/close and minimize/reopen; accessibility labels retained. |
 | Visual 4 Contextual Add | Library/folder-specific Add; mini-player safe-area inset reserves its measured space. | Folder UI passed; screenshot clearance checked. |
 | Visual 5 Chapter identity | Two-line titles, folder context and truthful imported-text labels. Mini-player display values snapshot model data to avoid rendering deleted SwiftData instances. | Library UI and deletion lifecycle tests passed. |

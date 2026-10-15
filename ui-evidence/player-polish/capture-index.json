@@ -1,0 +1,266 @@
+[
+  {
+    "file": "ios27-reader-return-word-Muted.png",
+    "test": "UIExperimentUITests/testReaderThemesAndPausedReturn()",
+    "device": "iPhone 17",
+    "timestamp": 1792030263.687
+  },
+  {
+    "file": "ios27-reader-restored-Muted.png",
+    "test": "UIExperimentUITests/testReaderThemesAndPausedReturn()",
+    "device": "iPhone 17",
+    "timestamp": 1792030258.393
+  },
+  {
+    "file": "ios27-reader-return-word-Warm.png",
+    "test": "UIExperimentUITests/testReaderThemesAndPausedReturn()",
+    "device": "iPhone 17",
+    "timestamp": 1792030249.239
+  },
+  {
+    "file": "ios27-reader-restored-Warm.png",
+    "test": "UIExperimentUITests/testReaderThemesAndPausedReturn()",
+    "device": "iPhone 17",
+    "timestamp": 1792030243.967
+  },
+  {
+    "file": "ios27-reader-return-word-Basic.png",
+    "test": "UIExperimentUITests/testReaderThemesAndPausedReturn()",
+    "device": "iPhone 17",
+    "timestamp": 1792030234.998
+  },
+  {
+    "file": "ios27-reader-restored-Basic.png",
+    "test": "UIExperimentUITests/testReaderThemesAndPausedReturn()",
+    "device": "iPhone 17",
+    "timestamp": 1792030229.571
+  },
+  {
+    "file": "ios27-speed-landscape.png",
+    "test": "UIExperimentUITests/testExpandedSheetsAndLandscape()",
+    "device": "iPhone 17",
+    "timestamp": 1792030414.393
+  },
+  {
+    "file": "ios27-reader-landscape.png",
+    "test": "UIExperimentUITests/testExpandedSheetsAndLandscape()",
+    "device": "iPhone 17",
+    "timestamp": 1792030411.268
+  },
+  {
+    "file": "ios27-appearance-sheet.png",
+    "test": "UIExperimentUITests/testExpandedSheetsAndLandscape()",
+    "device": "iPhone 17",
+    "timestamp": 1792030407.495
+  },
+  {
+    "file": "ios27-speed-largest-text.png",
+    "test": "UIExperimentUITests/testLargeTextSheetReachability()",
+    "device": "iPhone 17",
+    "timestamp": 1792030436.453
+  },
+  {
+    "file": "ios27-appearance-largest-text.png",
+    "test": "UIExperimentUITests/testLargeTextSheetReachability()",
+    "device": "iPhone 17",
+    "timestamp": 1792030433.172
+  },
+  {
+    "file": "ios27-reader-largest-return.png",
+    "test": "UIExperimentUITests/testLargeTextSheetReachability()",
+    "device": "iPhone 17",
+    "timestamp": 1792030425.351
+  },
+  {
+    "file": "ios27-reader-largest-text.png",
+    "test": "UIExperimentUITests/testLargeTextSheetReachability()",
+    "device": "iPhone 17",
+    "timestamp": 1792030423.137
+  },
+  {
+    "file": "ios27-reader-reduced-effects-Muted.png",
+    "test": "UIExperimentUITests/testReducedTransparencyAndMotionReader()",
+    "device": "iPhone 17",
+    "timestamp": 1792030471.447
+  },
+  {
+    "file": "ios27-reader-reduced-effects-Warm.png",
+    "test": "UIExperimentUITests/testReducedTransparencyAndMotionReader()",
+    "device": "iPhone 17",
+    "timestamp": 1792030458.858
+  },
+  {
+    "file": "ios27-reader-reduced-effects-Basic.png",
+    "test": "UIExperimentUITests/testReducedTransparencyAndMotionReader()",
+    "device": "iPhone 17",
+    "timestamp": 1792030446.233
+  },
+  {
+    "file": "ios27-saved-compact-return-Muted.png",
+    "test": "UIExperimentUITests/testSavedPositionAndCompactReturn()",
+    "device": "iPhone 17",
+    "timestamp": 1792030506.61
+  },
+  {
+    "file": "ios27-saved-before-play-Muted.png",
+    "test": "UIExperimentUITests/testSavedPositionAndCompactReturn()",
+    "device": "iPhone 17",
+    "timestamp": 1792030504.374
+  },
+  {
+    "file": "ios27-saved-compact-return-Warm.png",
+    "test": "UIExperimentUITests/testSavedPositionAndCompactReturn()",
+    "device": "iPhone 17",
+    "timestamp": 1792030495.51
+  },
+  {
+    "file": "ios27-saved-before-play-Warm.png",
+    "test": "UIExperimentUITests/testSavedPositionAndCompactReturn()",
+    "device": "iPhone 17",
+    "timestamp": 1792030493.273
+  },
+  {
+    "file": "ios27-saved-compact-return-Basic.png",
+    "test": "UIExperimentUITests/testSavedPositionAndCompactReturn()",
+    "device": "iPhone 17",
+    "timestamp": 1792030484.413
+  },
+  {
+    "file": "ios27-saved-before-play-Basic.png",
+    "test": "UIExperimentUITests/testSavedPositionAndCompactReturn()",
+    "device": "iPhone 17",
+    "timestamp": 1792030482.181
+  },
+  {
+    "file": "ios26-speed-landscape.png",
+    "test": "UIExperimentUITests/testExpandedSheetsAndLandscape()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030648.86
+  },
+  {
+    "file": "ios26-reader-landscape.png",
+    "test": "UIExperimentUITests/testExpandedSheetsAndLandscape()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030645.334
+  },
+  {
+    "file": "ios26-appearance-sheet.png",
+    "test": "UIExperimentUITests/testExpandedSheetsAndLandscape()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030640.533
+  },
+  {
+    "file": "ios26-speed-largest-text.png",
+    "test": "UIExperimentUITests/testLargeTextSheetReachability()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030671.15
+  },
+  {
+    "file": "ios26-appearance-largest-text.png",
+    "test": "UIExperimentUITests/testLargeTextSheetReachability()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030667.275
+  },
+  {
+    "file": "ios26-reader-largest-return.png",
+    "test": "UIExperimentUITests/testLargeTextSheetReachability()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030659.33
+  },
+  {
+    "file": "ios26-reader-largest-text.png",
+    "test": "UIExperimentUITests/testLargeTextSheetReachability()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030655.637
+  },
+  {
+    "file": "ios26-reader-return-word-Muted.png",
+    "test": "UIExperimentUITests/testReaderThemesAndPausedReturn()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030711.099
+  },
+  {
+    "file": "ios26-reader-restored-Muted.png",
+    "test": "UIExperimentUITests/testReaderThemesAndPausedReturn()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030704.775
+  },
+  {
+    "file": "ios26-reader-return-word-Warm.png",
+    "test": "UIExperimentUITests/testReaderThemesAndPausedReturn()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030697.512
+  },
+  {
+    "file": "ios26-reader-restored-Warm.png",
+    "test": "UIExperimentUITests/testReaderThemesAndPausedReturn()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030691.458
+  },
+  {
+    "file": "ios26-reader-return-word-Basic.png",
+    "test": "UIExperimentUITests/testReaderThemesAndPausedReturn()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030683.575
+  },
+  {
+    "file": "ios26-reader-restored-Basic.png",
+    "test": "UIExperimentUITests/testReaderThemesAndPausedReturn()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030676.587
+  },
+  {
+    "file": "ios26-reader-reduced-effects-Muted.png",
+    "test": "UIExperimentUITests/testReducedTransparencyAndMotionReader()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030744.462
+  },
+  {
+    "file": "ios26-reader-reduced-effects-Warm.png",
+    "test": "UIExperimentUITests/testReducedTransparencyAndMotionReader()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030733.169
+  },
+  {
+    "file": "ios26-reader-reduced-effects-Basic.png",
+    "test": "UIExperimentUITests/testReducedTransparencyAndMotionReader()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030722.041
+  },
+  {
+    "file": "ios26-saved-compact-return-Muted.png",
+    "test": "UIExperimentUITests/testSavedPositionAndCompactReturn()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030775.553
+  },
+  {
+    "file": "ios26-saved-before-play-Muted.png",
+    "test": "UIExperimentUITests/testSavedPositionAndCompactReturn()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030773.25
+  },
+  {
+    "file": "ios26-saved-compact-return-Warm.png",
+    "test": "UIExperimentUITests/testSavedPositionAndCompactReturn()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030766.183
+  },
+  {
+    "file": "ios26-saved-before-play-Warm.png",
+    "test": "UIExperimentUITests/testSavedPositionAndCompactReturn()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030763.211
+  },
+  {
+    "file": "ios26-saved-compact-return-Basic.png",
+    "test": "UIExperimentUITests/testSavedPositionAndCompactReturn()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030756.163
+  },
+  {
+    "file": "ios26-saved-before-play-Basic.png",
+    "test": "UIExperimentUITests/testSavedPositionAndCompactReturn()",
+    "device": "iPhone 17 Pro",
+    "timestamp": 1792030753.356
+  }
+]
