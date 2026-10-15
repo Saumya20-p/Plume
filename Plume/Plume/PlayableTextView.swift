@@ -290,6 +290,7 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
     private let sharpMask = ReaderGradientView()
     private let blurMask = ReaderGradientView()
     private var blurredTextHost: UIHostingController<ReaderBlurredText>?
+    private var blurredTextContainer: UIView?
     private var mirroredTextView: UITextView?
     private var headerClearance: CGFloat = 0
     private var reportedDockHeight: CGFloat = 0
@@ -382,14 +383,21 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         host.view.isOpaque = false
         host.view.isUserInteractionEnabled = false
         host.view.accessibilityElementsHidden = true
+        let container = UIView()
+        container.backgroundColor = .clear
+        container.isOpaque = false
+        container.isUserInteractionEnabled = false
+        container.accessibilityElementsHidden = true
         addChild(host)
-        view.insertSubview(host.view, belowSubview: controlsHost.view)
+        view.insertSubview(container, belowSubview: controlsHost.view)
+        container.addSubview(host.view)
         host.didMove(toParent: self)
+        blurredTextContainer = container
         blurredTextHost = host
         sharpMask.gradient.colors = [UIColor.black.cgColor, UIColor.black.cgColor, UIColor.clear.cgColor, UIColor.clear.cgColor]
         blurMask.gradient.colors = [UIColor.clear.cgColor, UIColor.black.cgColor, UIColor.black.cgColor]
         sharpTextContainer.mask = sharpMask
-        host.view.mask = blurMask
+        container.mask = blurMask
     }
 
     private func removeBlurredText() {
@@ -397,19 +405,21 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         guard let host = blurredTextHost else { return }
         host.willMove(toParent: nil)
         host.view.removeFromSuperview()
+        blurredTextContainer?.removeFromSuperview()
         host.removeFromParent()
         if let mirror = mirroredTextView {
             textView.textStorage.removeLayoutManager(mirror.layoutManager)
         }
         blurredTextHost = nil
+        blurredTextContainer = nil
         mirroredTextView = nil
     }
 
     func synchronizeBlurredTextOffset() {
-        guard let host = blurredTextHost, let mirror = mirroredTextView else { return }
+        guard let container = blurredTextContainer, let mirror = mirroredTextView else { return }
         // The mirror renders only the lower viewport. Its text coordinates remain
         // identical to the reader's after accounting for that viewport's origin.
-        let offset = CGPoint(x: textView.contentOffset.x, y: textView.contentOffset.y + host.view.frame.minY)
+        let offset = CGPoint(x: textView.contentOffset.x, y: textView.contentOffset.y + container.frame.minY)
         if mirror.contentOffset != offset { mirror.setContentOffset(offset, animated: false) }
     }
 
@@ -420,13 +430,14 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         let dockHeight = max(0, view.bounds.maxY - controlsHost.view.frame.minY)
         let inset = UIEdgeInsets(top: max(headerClearance, view.safeAreaInsets.top) + 16, left: 16, bottom: dockHeight + 24, right: 16)
         if textView.textContainerInset != inset { textView.textContainerInset = inset }
-        if let host = blurredTextHost, let mirror = mirroredTextView {
+        if let host = blurredTextHost, let container = blurredTextContainer, let mirror = mirroredTextView {
             let effectiveDockHeight = reportedDockHeight > 0 ? reportedDockHeight : controlsHost.view.bounds.height
             let dockTop = controlsHost.view.frame.maxY - effectiveDockHeight
             let start = min(view.bounds.maxY, max(headerClearance + 16, dockTop - 72))
             let transitionEnd = min(view.bounds.maxY, max(start, dockTop))
             let blurFrame = CGRect(x: view.bounds.minX, y: start, width: view.bounds.width, height: max(0, view.bounds.maxY - start))
-            if host.view.frame != blurFrame { host.view.frame = blurFrame }
+            if container.frame != blurFrame { container.frame = blurFrame }
+            if host.view.frame != container.bounds { host.view.frame = container.bounds }
             if mirror.textContainerInset != inset { mirror.textContainerInset = inset }
             host.view.layoutIfNeeded()
 
@@ -436,7 +447,7 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
             CATransaction.setDisableActions(true)
             sharpMask.frame = sharpTextContainer.bounds
             sharpMask.gradient.locations = [0, NSNumber(value: Double(start / max(1, view.bounds.height))), NSNumber(value: Double(transitionEnd / max(1, view.bounds.height))), 1]
-            blurMask.frame = host.view.bounds
+            blurMask.frame = container.bounds
             blurMask.gradient.locations = [0, NSNumber(value: Double(min(1, max(0, (transitionEnd - start) / max(1, blurFrame.height))))), 1]
             CATransaction.commit()
             synchronizeBlurredTextOffset()
