@@ -279,9 +279,8 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
     let textView = UITextView()
     let controlsHost: UIHostingController<Controls>
     var onReaderLayout: (() -> Void)?
-    private let veil = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+    private let veil = UIVisualEffectView(effect: UIBlurEffect(style: .regular))
     private let veilMask = ReaderGradientView()
-    private let themeFade = ReaderGradientView()
     private var headerClearance: CGFloat = 0
     private var reportedDockHeight: CGFloat = 0
     private var maskTransitionFraction: CGFloat = -1
@@ -309,8 +308,6 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         let dockMaskColor = UIColor.black.withAlphaComponent(0.97).cgColor
         veilMask.gradient.colors = [UIColor.clear.cgColor, dockMaskColor, dockMaskColor]
         view.addSubview(veil)
-        themeFade.isUserInteractionEnabled = false
-        view.addSubview(themeFade)
 
         addChild(controlsHost)
         controlsHost.sizingOptions = .intrinsicContentSize
@@ -328,15 +325,16 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
             controlsHost.view.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
         ])
         textView.bottomEdgeEffect.isHidden = true
+        // Default automatic can select a hard toolbar edge for the inline title.
+        // Keep the native effect but explicitly soften its reader transition.
+        textView.topEdgeEffect.style = .soft
     }
 
     func configureReader(headerClearance: CGFloat, dockHeight: CGFloat, backgroundColor: UIColor, reduceTransparency: Bool) {
         self.headerClearance = max(0, headerClearance)
         reportedDockHeight = max(0, dockHeight)
         view.backgroundColor = backgroundColor
-        themeFade.gradient.colors = [backgroundColor.withAlphaComponent(0).cgColor, backgroundColor.withAlphaComponent(0.25).cgColor]
         veil.isHidden = reduceTransparency
-        themeFade.isHidden = reduceTransparency
         view.setNeedsLayout()
     }
 
@@ -354,7 +352,6 @@ struct PlayableTextView<Controls: View>: UIViewControllerRepresentable {
         let transitionFraction = min(1, max(0, (dockTop - start) / max(1, veilFrame.height)))
         if veil.frame != veilFrame || maskTransitionFraction != transitionFraction || veil.mask == nil {
             veil.frame = veilFrame
-            themeFade.frame = veilFrame
             veilMask.frame = veil.bounds
             // A mask blends the fixed blur with the sharp text underneath.
             // Finish the ramp above the dock, leaving only a faint trace of line structure.

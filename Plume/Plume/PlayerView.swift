@@ -22,6 +22,7 @@ struct PlayerView: View, Equatable {
     @State private var readerVisible = false
     @State private var dockHeight: CGFloat = 0
     @State private var wordDisplay = ReaderWordDisplay()
+    @ScaledMetric(relativeTo: .subheadline) private var returnPillWidth: CGFloat = 220
     @ScaledMetric(relativeTo: .subheadline) private var returnLineHeight: CGFloat = 20
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -85,8 +86,8 @@ struct PlayerView: View, Equatable {
                             ZStack {
                                 Text(wordDisplay.displayText)
                                     .font(.subheadline.weight(.semibold))
-                                    .lineLimit(2)
-                                    .minimumScaleFactor(0.6)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
                                     .multilineTextAlignment(.center)
                                     .padding(.horizontal, 44)
                                     .frame(maxWidth: .infinity)
@@ -96,7 +97,7 @@ struct PlayerView: View, Equatable {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.leading, 16)
                             }
-                            .frame(height: max(48, returnLineHeight * 2 + 8))
+                            .frame(width: min(returnPillWidth, max(44, geometry.size.width - geometry.safeAreaInsets.leading - geometry.safeAreaInsets.trailing - 32)), height: max(44, returnLineHeight + 24))
                             .contentShape(Capsule())
                         }
                         .buttonStyle(.plain)
@@ -197,6 +198,7 @@ struct PlayerView: View, Equatable {
                 }
             }
             
+            updateReturnWord()
             if document.audioFileURL != nil || playbackEngine.isAppleActive {
                 if !playbackEngine.isPlaying {
                     playbackEngine.play()
@@ -232,8 +234,12 @@ struct PlayerView: View, Equatable {
     }
 
     private func updateReturnWord() {
-        let word = playbackEngine.currentDocument?.id == document.id ? progress.currentWord?.word : nil
-        wordDisplay.update(word: word, documentID: document.id, isPaused: !playbackEngine.isPlaying)
+        let marker = playbackEngine.currentDocument?.id == document.id ? progress.currentWord : nil
+        wordDisplay.update(
+            word: marker?.word, documentID: document.id, isPaused: !playbackEngine.isPlaying,
+            text: document.bodyText, rangeLocation: marker?.rangeLocation,
+            savedPosition: playbackEngine.currentDocument?.id == document.id ? document.lastReadCharIndex : nil
+        )
     }
 
 }
@@ -266,7 +272,7 @@ struct PlayerControlsView: View {
     var body: some View {
         VStack(spacing: 4) {
             if verticalSizeClass == .compact {
-                playbackTime.frame(maxWidth: .infinity, alignment: .leading)
+                playbackTime.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             } else {
                 HStack {
                     queueButton
@@ -413,16 +419,20 @@ struct PlayerControlsView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 16) 
-        .padding(.top, 44)
+        .padding(.bottom, 10)
+        .padding(.top, 8)
         .contentShape(Rectangle()) // Capture all taps so they don't fall through to text!
         .background(
             Color(uiColor: .secondarySystemBackground).opacity(reduceTransparency ? 1 : 0.55),
             in: RoundedRectangle(cornerRadius: 24, style: .continuous)
         )
-        .overlay(alignment: .top) { timeline }
+        .overlay(alignment: .top) {
+            GeometryReader { geometry in
+                timeline(dockHeight: geometry.size.height)
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 5)
+        .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 3)
 
         .onChange(of: showSpeedSheet || showVoiceSheet) { _, presented in
             onSheetPresentationChanged(presented)
@@ -439,9 +449,10 @@ struct PlayerControlsView: View {
         }
     }
 
-    private var timeline: some View {
+    private func timeline(dockHeight: CGFloat) -> some View {
         LiveEdgeScrubber(
             currentTime: $progress.currentTime,
+            dockHeight: dockHeight,
             generatedDuration: playbackEngine.duration,
             estimatedDuration: document.estimatedDuration,
             isFullyGenerated: document.audioFileURL != nil,
@@ -507,6 +518,7 @@ struct ScaleButtonStyle: ButtonStyle {
 
 struct LiveEdgeScrubber: View {
     @Binding var currentTime: TimeInterval
+    var dockHeight: CGFloat = 120
     let generatedDuration: TimeInterval
     let estimatedDuration: TimeInterval
     let isFullyGenerated: Bool
@@ -517,6 +529,14 @@ struct LiveEdgeScrubber: View {
     private var totalTime: TimeInterval {
         let total = isFullyGenerated ? generatedDuration : estimatedDuration
         return total.isFinite ? max(0, total) : 0
+    }
+
+    private func rim(color: Color, width: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .strokeBorder(color, lineWidth: 3)
+            .frame(width: width, height: max(48, dockHeight))
+            .mask(alignment: .top) { Rectangle().frame(height: 24) }
+            .allowsHitTesting(false)
     }
 
     private func positionLabel(_ time: TimeInterval) -> String {
@@ -531,25 +551,23 @@ struct LiveEdgeScrubber: View {
             let progressRatio = CGFloat(max(0, min(1, displayTime / validTotal)))
             let bufferRatio = isFullyGenerated ? 1 : CGFloat(max(0, min(1, generatedDuration / validTotal)))
             ZStack(alignment: .topLeading) {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.18))
-                    .frame(height: 3)
-                Capsule()
-                    .fill(Color.secondary.opacity(0.35))
-                    .frame(width: geometry.size.width * bufferRatio, height: 3)
-                Capsule()
-                    .fill(DesignSystem.accent)
-                    .frame(width: geometry.size.width * progressRatio, height: 3)
+                // Draw the very same continuous rounded rectangle as the dock,
+                // then expose its upper rim. Horizontal masks preserve seek mapping
+                // while carrying progress around both curved ends.
+                rim(color: Color.secondary.opacity(0.18), width: geometry.size.width)
+                rim(color: Color.secondary.opacity(0.35), width: geometry.size.width)
+                    .mask(alignment: .leading) { Rectangle().frame(width: geometry.size.width * bufferRatio) }
+                rim(color: DesignSystem.accent, width: geometry.size.width)
+                    .mask(alignment: .leading) { Rectangle().frame(width: geometry.size.width * progressRatio) }
                 if dragTime != nil {
                     Circle()
                         .fill(DesignSystem.accent)
-                        .frame(width: 10, height: 10)
-                        .offset(x: max(8, min(geometry.size.width - 18, geometry.size.width * progressRatio - 5)), y: 5)
+                        .frame(width: 8, height: 8)
+                        .offset(x: max(24, min(geometry.size.width - 24, geometry.size.width * progressRatio)) - 4, y: 0)
                 }
             }
-            .padding(.top, 1)
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
-            .contentShape(Rectangle())
+            .frame(width: geometry.size.width, height: 44, alignment: .topLeading)
+            .contentShape(RimScrubberHitArea())
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
@@ -579,6 +597,18 @@ struct LiveEdgeScrubber: View {
             onSeek(target)
         }
         .accessibilityHint("Adjusts playback by 15 seconds")
+    }
+}
+
+/// Queue and close have 44-point targets starting eight points below the rim.
+/// Only the central time label shares the remainder of the scrubber's hit band.
+private struct RimScrubberHitArea: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.addRect(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: 8))
+        path.addRect(CGRect(x: rect.minX + 76, y: rect.minY + 8,
+                            width: max(0, rect.width - 152), height: max(0, rect.height - 8)))
+        return path
     }
 }
 

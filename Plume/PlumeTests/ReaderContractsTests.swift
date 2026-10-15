@@ -35,20 +35,22 @@ struct ReaderContractsTests {
         #expect(display.displayText == "Return to Current Word")
     }
 
-    @Test("Playing never substitutes a cached word for invalid input", arguments: [
-        nil, "", "…", "two words"
+    @Test("Playback gaps retain the latest word until another valid token arrives", arguments: [
+        nil, "", " \n\t", "…", "?!", "two words", "👋"
     ] as [String?])
-    func testInvalidPlayingWordDoesNotReuseCache(word: String?) {
+    func testPlaybackGapsRetainLatestWord(word: String?) {
         let documentID = UUID()
         var display = ReaderWordDisplay()
         display.update(word: "previous", documentID: documentID, isPaused: false)
         display.update(word: word, documentID: documentID, isPaused: false)
-        #expect(display.currentWordValue == nil)
-        #expect(display.displayText == "Return to Current Word")
+        #expect(display.currentWordValue == "previous")
+        #expect(display.displayText == "previous")
 
         display.update(word: word, documentID: documentID, isPaused: true)
         #expect(display.currentWordValue == "previous")
         #expect(display.displayText == "previous")
+        display.update(word: "next", documentID: documentID, isPaused: false)
+        #expect(display.displayText == "next")
     }
 
     @Test
@@ -65,7 +67,7 @@ struct ReaderContractsTests {
         #expect(display.displayText == "second!")
 
         display.update(word: nil, documentID: documentID, isPaused: false)
-        #expect(display.displayText == "Return to Current Word")
+        #expect(display.displayText == "second!")
         display.update(word: "third", documentID: documentID, isPaused: false)
         #expect(display.displayText == "third")
     }
@@ -94,6 +96,78 @@ struct ReaderContractsTests {
         #expect(display.displayText == "Return to Current Word")
         display.update(word: nil, documentID: UUID(), isPaused: true)
         #expect(display.displayText == "Return to Current Word")
+    }
+
+    @Test("Saved-position words use UTF-16 reader coordinates", arguments: [
+        ("First second", 0, "First"),
+        ("First second", 3, "First"),
+        ("First second", 5, "second"),
+        ("First, — second!", 5, "second"),
+        ("First, — second!", 8, "second"),
+        ("First second!", 13, "second"),
+        ("First second!", 12, "second"),
+        ("cafe\u{301} next", 4, "cafe\u{301}"),
+        ("👩🏽‍🚀 café next", 2, "café"),
+        ("你好 世界", 1, "你好"),
+        ("can't stop", 3, "can't"),
+        ("mother-in-law next", 7, "mother-in-law"),
+        ("Hi", -1, nil),
+        ("Hi", 3, nil),
+        ("", 0, nil),
+        ("... ", 4, nil)
+    ] as [(String, Int, String?)])
+    func testSavedPositionResolution(text: String, offset: Int, expected: String?) {
+        #expect(ReaderWordDisplay.word(in: text, atUTF16Offset: offset) == expected)
+    }
+
+    @Test
+    func testSavedPositionInitializesOnceAndAuthoritativeMarkerWins() {
+        let document = UUID()
+        var display = ReaderWordDisplay()
+        display.update(word: nil, documentID: document, isPaused: true,
+                       text: "First second third", savedPosition: 6)
+        #expect(display.displayText == "second")
+        display.update(word: "third", documentID: document, isPaused: false,
+                       text: "First second third", rangeLocation: 13, savedPosition: 6)
+        display.update(word: nil, documentID: document, isPaused: false,
+                       text: "First second third", savedPosition: 6)
+        #expect(display.displayText == "third")
+        display.update(word: "", documentID: document, isPaused: false,
+                       text: "First second third", rangeLocation: 0, savedPosition: 6)
+        #expect(display.displayText == "third")
+
+        var authoritative = ReaderWordDisplay()
+        authoritative.update(word: "", documentID: document, isPaused: true,
+                             text: "First second third", rangeLocation: 13, savedPosition: 6)
+        #expect(authoritative.displayText == "third")
+        var invalidMarker = ReaderWordDisplay()
+        invalidMarker.update(word: "", documentID: document, isPaused: true,
+                             text: "First second third", rangeLocation: 999, savedPosition: 6)
+        #expect(invalidMarker.currentWordValue == nil)
+    }
+
+    @Test
+    func testMissingPlaybackOwnershipDoesNotConsumePositionInitialization() {
+        let document = UUID()
+        var display = ReaderWordDisplay()
+        display.update(word: nil, documentID: document, isPaused: true)
+        #expect(display.currentWordValue == nil)
+        display.update(word: "", documentID: document, isPaused: true,
+                       text: "First second", rangeLocation: 6, savedPosition: 0)
+        #expect(display.displayText == "second")
+    }
+
+    @Test
+    func testSavedPositionIsReinitializedAcrossAToBToAWithoutWordLeak() {
+        let first = UUID()
+        let second = UUID()
+        var display = ReaderWordDisplay()
+        display.update(word: "advanced", documentID: first, isPaused: false)
+        display.update(word: nil, documentID: second, isPaused: false, text: "", savedPosition: 0)
+        #expect(display.currentWordValue == nil)
+        display.update(word: nil, documentID: first, isPaused: true,
+                       text: "First returned", savedPosition: 6)
+        #expect(display.displayText == "returned")
     }
 
     @Test
