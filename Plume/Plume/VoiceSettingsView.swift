@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import Observation
+import os
 
 // MARK: - Voice Preview Controller
 
@@ -15,6 +16,9 @@ final class VoicePreviewController {
     private(set) var previewingVoiceID: String?
     private(set) var isGeneratingPreview: Bool = false
     
+    @ObservationIgnored private let audioSessionOwner = UUID()
+    @ObservationIgnored private var previewRevision = UUID()
+    @ObservationIgnored private var activePreviewSource: ObjectIdentifier?
     @ObservationIgnored private let appleSynthesizer = AVSpeechSynthesizer()
     @ObservationIgnored private var audioPlayer: AVAudioPlayer?
     @ObservationIgnored private var delegateBridge: PreviewDelegateBridge?
@@ -22,13 +26,15 @@ final class VoicePreviewController {
     @ObservationIgnored private var backgroundObserver: NSObjectProtocol?
     
     init() {
-        let bridge = PreviewDelegateBridge { [weak self] in
+        let bridge = PreviewDelegateBridge { [weak self] source in
             Task { @MainActor [weak self] in
-                self?.handlePlaybackFinished()
+                guard let self, self.activePreviewSource == source else { return }
+                self.handlePlaybackFinished()
             }
         }
         self.delegateBridge = bridge
         self.appleSynthesizer.delegate = bridge
+        self.appleSynthesizer.usesApplicationAudioSession = true
         
         self.backgroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didEnterBackgroundNotification,
@@ -41,7 +47,8 @@ final class VoicePreviewController {
         }
     }
     
-    deinit {
+    isolated deinit {
+        AppAudioSession.shared.release(owner: audioSessionOwner, reason: "preview-deinit")
         if let backgroundObserver {
             NotificationCenter.default.removeObserver(backgroundObserver)
         }
@@ -63,24 +70,25 @@ final class VoicePreviewController {
             AudioPlaybackEngine.shared.pause()
         }
         
-        // Prepare audio session
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
-                try AVAudioSession.sharedInstance().setActive(true)
-            } catch {
-                print("[VoicePreview] Failed to configure audio session: \(error)")
+        previewingVoiceID = identifier
+        let revision = previewRevision
+        AppAudioSession.shared.prepare(owner: audioSessionOwner, reason: "voice-preview") { [weak self] result in
+            guard let self, self.previewRevision == revision, self.previewingVoiceID == identifier else { return }
+            switch result {
+            case .success:
+                switch voiceID {
+                case .apple(let id): self.previewAppleVoice(id: id)
+                case .kokoro(let id): self.previewKokoroVoice(id: id)
+                }
+            case .failure(let error):
+                guard !(error is CancellationError) else { return }
+                Log.audio.error("Voice preview session failed: \(error.localizedDescription, privacy: .public)")
+                self.stop()
             }
-        }
-        
-        switch voiceID {
-        case .apple(let id):
-            previewAppleVoice(id: id)
-        case .kokoro(let id):
-            previewKokoroVoice(id: id)
         }
     }
     
+
     private func previewAppleVoice(id: String) {
         previewingVoiceID = id
         let utterance = AVSpeechUtterance(string: Self.previewSampleText)
@@ -88,6 +96,7 @@ final class VoicePreviewController {
             utterance.voice = voice
         }
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        activePreviewSource = ObjectIdentifier(utterance)
         appleSynthesizer.speak(utterance)
     }
     
@@ -133,8 +142,7 @@ final class VoicePreviewController {
             } catch {
                 print("[VoicePreview] Failed to generate preview for \(id): \(error)")
                 guard !Task.isCancelled, self.previewingVoiceID == id else { return }
-                self.isGeneratingPreview = false
-                self.previewingVoiceID = nil
+                self.stop()
             }
         }
     }
@@ -144,14 +152,17 @@ final class VoicePreviewController {
             let player = try AVAudioPlayer(contentsOf: url)
             player.delegate = delegateBridge
             self.audioPlayer = player
-            player.play()
+            activePreviewSource = ObjectIdentifier(player)
+            if !player.play() { stop() }
         } catch {
             print("[VoicePreview] Failed to play audio file at \(url): \(error)")
-            previewingVoiceID = nil
+            stop()
         }
     }
     
     func stop() {
+        previewRevision = UUID()
+        activePreviewSource = nil
         generationTask?.cancel()
         generationTask = nil
         isGeneratingPreview = false
@@ -166,40 +177,38 @@ final class VoicePreviewController {
         audioPlayer = nil
         previewingVoiceID = nil
         
-        // Restore playback audio session category
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
+        AppAudioSession.shared.release(owner: audioSessionOwner, reason: "preview-stop")
     }
     
     private func handlePlaybackFinished() {
-        previewingVoiceID = nil
-        isGeneratingPreview = false
+        stop()
     }
 }
 
 // MARK: - Preview Delegate Bridge
 
 private final class PreviewDelegateBridge: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate, @unchecked Sendable {
-    private let onFinish: @Sendable () -> Void
+    private let onFinish: @Sendable (ObjectIdentifier) -> Void
     
-    init(onFinish: @escaping @Sendable () -> Void) {
+    init(onFinish: @escaping @Sendable (ObjectIdentifier) -> Void) {
         self.onFinish = onFinish
         super.init()
     }
     
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        onFinish()
+        onFinish(ObjectIdentifier(utterance))
     }
     
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        onFinish()
+        onFinish(ObjectIdentifier(utterance))
     }
     
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        onFinish()
+        onFinish(ObjectIdentifier(player))
     }
     
     func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: (any Error)?) {
-        onFinish()
+        onFinish(ObjectIdentifier(player))
     }
 }
 

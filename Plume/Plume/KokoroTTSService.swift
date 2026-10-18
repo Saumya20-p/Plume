@@ -680,13 +680,6 @@ class KokoroTTSService: ObservableObject {
     
     private init() {
         
-        do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playback, mode: .default)
-        } catch {
-            Log.tts.error("Failed to set up AVAudioSession: \(error.localizedDescription, privacy: .public)")
-        }
-        
         // Background handling is centralized in AudioGenerationManager, which
         // pauses generation (isPausedForBackground) on willResignActive and
         // resumes on didBecomeActive. We do NOT cancel here — cancelling would
@@ -858,19 +851,24 @@ class KokoroTTSService: ObservableObject {
             UnsafeMutableRawPointer(channels[0]).copyMemory(from: UnsafeRawPointer(baseAddress), byteCount: byteCount)
         }
         
-        audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: format)
-        
-        if !audioEngine.isRunning {
-            try audioEngine.start()
-        }
-        
-        playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts) { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.isPlaying = false
+        let audioSessionOwner = UUID()
+        do {
+            try await AppAudioSession.shared.prepare(owner: audioSessionOwner, profile: .standalone, reason: "kokoro-standalone")
+            try Task.checkCancellation()
+            audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: format)
+            if !audioEngine.isRunning { try audioEngine.start() }
+            playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts) { [weak self] in
+                Task { @MainActor [weak self] in
+                    AppAudioSession.shared.release(owner: audioSessionOwner, reason: "kokoro-finished")
+                    self?.isPlaying = false
+                }
             }
+            playerNode.play()
+        } catch {
+            AppAudioSession.shared.release(owner: audioSessionOwner, reason: "kokoro-cancelled")
+            isPlaying = false
+            throw error
         }
-        
-        playerNode.play()
     }
 }
 import Foundation

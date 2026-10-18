@@ -76,7 +76,7 @@ public class AudioGenerationManager: ObservableObject {
     }
     
     
-    public func generate(document: Document, playbackEngine: AudioPlaybackEngine, startChunkIndex: Int = 0) {
+    public func generate(document: Document, playbackEngine: AudioPlaybackEngine, startChunkIndex: Int = 0, preservingPlaybackSession: Bool = false) {
         cancelSpeculativePreparation()
 
         // Guard against duplicate taps
@@ -101,7 +101,7 @@ public class AudioGenerationManager: ObservableObject {
         activePlaybackEngine = playbackEngine
         playbackEngine.beginGenerationSession(session)
         
-        if startChunkIndex == 0 {
+        if startChunkIndex == 0 && !preservingPlaybackSession {
             playbackEngine.load(document: document, generationSession: session)
         }
         

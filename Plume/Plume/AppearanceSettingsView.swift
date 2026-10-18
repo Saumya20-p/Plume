@@ -1,10 +1,17 @@
 import SwiftUI
+import UIKit
+import Combine
 
 struct AppearanceSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var appearanceManager: AppearanceManager
     @ScaledMetric(relativeTo: .caption) private var themeCardMinimumWidth: CGFloat = 88
+    @State private var fontSize = 18.0
+    @State private var lineSpacing = 4.0
+    @State private var typographyLoaded = false
+    @State private var isEditingTypography = false
     
     var body: some View {
         NavigationStack {
@@ -26,6 +33,16 @@ struct AppearanceSettingsView: View {
                     .listRowInsets(EdgeInsets())
                 }
                 
+                Section {
+                    Toggle("Auto-Hide Reader Controls", isOn: $appearanceManager.autoHideReaderControls)
+                        .tint(.accentColor)
+                        .accessibilityIdentifier("appearance.autoHideReaderControls")
+                } header: {
+                    Text("Reader Controls")
+                } footer: {
+                    Text("Hide the header and player while following playback. Tap the page or scroll to show them again.")
+                }
+
                 Section(header: Text("Font")) {
                     Picker("Reading Font", selection: $appearanceManager.readerFont) {
                         ForEach(ReaderFont.allCases) { style in
@@ -39,9 +56,10 @@ struct AppearanceSettingsView: View {
                         HStack {
                             Text("A")
                                 .font(.system(size: 14))
-                            Slider(value: $appearanceManager.fontSize, in: 12...36, step: 1)
+                            Slider(value: $fontSize, in: 12...36, step: 1, onEditingChanged: finishTypographyEditing)
                                 .accessibilityLabel("Reading font size")
-                                .accessibilityValue("\(Int(appearanceManager.fontSize)) points")
+                                .accessibilityValue("\(Int(fontSize)) points")
+                                .onChange(of: fontSize) { previewTypography() }
                             Text("A")
                                 .font(.system(size: 24))
                         }
@@ -52,9 +70,10 @@ struct AppearanceSettingsView: View {
                         HStack {
                             Image(systemName: "line.3.horizontal")
                                 .font(.system(size: 14))
-                            Slider(value: $appearanceManager.lineSpacing, in: 0...20, step: 1)
+                            Slider(value: $lineSpacing, in: 0...20, step: 1, onEditingChanged: finishTypographyEditing)
                                 .accessibilityLabel("Line spacing")
-                                .accessibilityValue("\(Int(appearanceManager.lineSpacing)) points")
+                                .accessibilityValue("\(Int(lineSpacing)) points")
+                                .onChange(of: lineSpacing) { previewTypography() }
                             Image(systemName: "arrow.up.and.down.text.horizontal")
                                 .font(.system(size: 20))
                         }
@@ -71,6 +90,7 @@ struct AppearanceSettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
+                        commitTypography()
                         dismiss()
                     }
                 }
@@ -80,6 +100,36 @@ struct AppearanceSettingsView: View {
         .presentationBackgroundInteraction(.disabled)
         .presentationDetents([.height(650), .large])
         .presentationDragIndicator(.visible)
+        .onAppear {
+            fontSize = appearanceManager.latestFontSize
+            lineSpacing = appearanceManager.latestLineSpacing
+            typographyLoaded = true
+        }
+        .onDisappear {
+            commitTypography()
+            typographyLoaded = false
+        }
+        .onChange(of: scenePhase) {
+            if scenePhase != .active { commitTypography() }
+        }
+    }
+
+    private func previewTypography() {
+        guard typographyLoaded else { return }
+        let size = fontSize
+        let spacing = lineSpacing
+        let persist = !isEditingTypography
+        appearanceManager.updateTypography(fontSize: size, lineSpacing: spacing, persist: persist)
+    }
+
+    private func finishTypographyEditing(_ editing: Bool) {
+        isEditingTypography = editing
+        if !editing { commitTypography() }
+    }
+
+    private func commitTypography() {
+        guard typographyLoaded else { return }
+        appearanceManager.updateTypography(fontSize: fontSize, lineSpacing: lineSpacing, persist: true)
     }
     
     private func selectTheme(_ theme: ReadingTheme) {

@@ -30,6 +30,7 @@ KokoroTestApp/
 kokoro-ios-repo/
 
 # Test / Scratch files
+/.scratch/
 test_*.swift
 test_bundle
 test_race*

@@ -9,3 +9,5 @@ phase file's acceptance criteria exactly, and if you get stuck on the same
 problem after two real attempts, say so plainly rather than guessing
 further — that's the signal to escalate to the architect agent instead of
 continuing to iterate.
+
+Follow the repository-root [AGENTS.md](../../../AGENTS.md) for scratch output paths, worktree handling, and cleanup. Keep temporary Plume work in `.scratch/<task>/`.

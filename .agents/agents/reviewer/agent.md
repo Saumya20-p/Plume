@@ -10,3 +10,5 @@ audio/timing synchronization. Look specifically for cases where the code
 "looks right" but silently misbehaves — off-by-one timing drift, a
 confirmation step that can be bypassed, a race condition on rapid input.
 Report concrete issues, not general style feedback.
+
+Follow the repository-root [AGENTS.md](../../../AGENTS.md) for scratch output paths, worktree handling, and cleanup. Keep temporary Plume work in `.scratch/<task>/`.

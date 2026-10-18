@@ -8,3 +8,5 @@ You are brought in specifically because a lighter-weight attempt already
 struggled with this problem. Read the failed attempt's context carefully,
 understand root cause before proposing a fix, and don't just repeat what
 was already tried with minor variations.
+
+Follow the repository-root [AGENTS.md](../../../AGENTS.md) for scratch output paths, worktree handling, and cleanup. Keep temporary Plume work in `.scratch/<task>/`.

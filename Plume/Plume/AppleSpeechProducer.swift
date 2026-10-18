@@ -186,7 +186,12 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
         inFlightUtteranceCount + pendingQueue.count
     }
 
+    private let audioSessionOwner = UUID()
+    private let managesAudioSession: Bool
+    private var preparingAudioGeneration: UInt64?
+
     init(synthesizer: (any SpeechSynthesizing)? = nil) {
+        managesAudioSession = synthesizer == nil
         let actualSynthesizer = synthesizer ?? AVSpeechSynthesizer()
         self.synthesizer = actualSynthesizer
         let (stream, continuation) = AsyncStream.makeStream(of: AppleSpeechEvent.self)
@@ -213,8 +218,8 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
     }
     
     func activateAudioSession() throws {
-        // Audio session is globally managed by AudioPlaybackEngine via a background queue.
-        // Doing this here on the main thread causes UI unresponsiveness and 'cannot add handler' CoreAnimation drops.
+        // Preparation is asynchronous through AppAudioSession before pumping.
+        // Retain the protocol entry point without synchronous session mutations.
     }
 
     func speak(_ request: Request) {
@@ -255,6 +260,17 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
     }
 
     func resume() {
+        if managesAudioSession && !AppAudioSession.shared.isReady(owner: audioSessionOwner) {
+            let generation = generationID
+            AppAudioSession.shared.prepare(owner: audioSessionOwner, reason: "speech-resume") { [weak self] result in
+                guard let self, self.generationID == generation else { return }
+                switch result {
+                case .success: self.resume()
+                case .failure(let error): self.handleAudioSessionFailure(error)
+                }
+            }
+            return
+        }
         if synthesizer.isPaused {
             _ = synthesizer.continueSpeaking()
         }
@@ -274,8 +290,10 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
 
     private func invalidatePlaybackState() {
         generationID &+= 1
+        preparingAudioGeneration = nil
         eventBridge.setGenerationID(generationID)
         _ = synthesizer.stopSpeaking(at: .immediate)
+        if managesAudioSession { AppAudioSession.shared.release(owner: audioSessionOwner, reason: "speech-stop") }
         requests.removeAll(keepingCapacity: true)
         pendingQueue.removeAll(keepingCapacity: true)
         inFlightUtteranceCount = 0
@@ -284,10 +302,32 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
     }
 
     private func pumpQueue() {
+        guard !pendingQueue.isEmpty else { return }
+        if managesAudioSession && !AppAudioSession.shared.isReady(owner: audioSessionOwner) {
+            guard preparingAudioGeneration != generationID else { return }
+            let generation = generationID
+            preparingAudioGeneration = generation
+            AppAudioSession.shared.prepare(owner: audioSessionOwner, reason: "apple-speech") { [weak self] result in
+                guard let self, self.generationID == generation else { return }
+                self.preparingAudioGeneration = nil
+                switch result {
+                case .success: self.pumpQueue()
+                case .failure(let error): self.handleAudioSessionFailure(error)
+                }
+            }
+            return
+        }
         while inFlightUtteranceCount < maxInFlightUtterances && !pendingQueue.isEmpty {
             let nextRequest = pendingQueue.removeFirst()
             dispatchUtterance(for: nextRequest)
         }
+    }
+
+    private func handleAudioSessionFailure(_ error: Error) {
+        guard !(error is CancellationError) else { return }
+        invalidatePlaybackState()
+        AudioPlaybackEngine.shared.pause()
+        AudioPlaybackEngine.shared.coordinator.reportAudioSessionFailure(error)
     }
 
     private func dispatchUtterance(for request: Request) {

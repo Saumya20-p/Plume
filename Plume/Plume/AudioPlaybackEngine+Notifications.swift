@@ -12,27 +12,28 @@ extension AudioPlaybackEngine {
         guard let player = queuePlayer else { return }
         
         playerTimeControlCancellable = player.publisher(for: \.timeControlStatus)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] status in
-                Task { @MainActor [weak self] in
-                    guard let self = self else { return }
-                    guard !self.coordinator.isAppleActive else { return }
-                    
-                    let playing = (status != .paused)
-                    if self.isPlaying != playing {
-                        self.isPlaying = playing
-                        if playing {
-                            if self.wallClockSessionStartTime == nil {
-                                self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
-                            }
-                        } else {
-                            self.recordListeningSession()
-                        }
-                        self.updateNowPlayingPlaybackInfo()
-                    }
+            .sink { [weak self, weak player] _ in
+                Task { @MainActor [weak self, weak player] in
+                    guard let self, let player else { return }
+                    self.handlePlayerStatus(player)
                 }
             }
     }
+
+    func handlePlayerStatus(_ player: AVQueuePlayer) {
+        guard queuePlayer === player, pendingSeek == nil, !coordinator.isAppleActive,
+              AppAudioSession.shared.isReady(owner: audioSessionOwner) else { return }
+        // Read current status rather than replaying queued KVO values from before a seek.
+        let playing = player.timeControlStatus != .paused && coordinator.desiredPlayIntent == .playing
+        if isPlaying != playing {
+            isPlaying = playing
+            if playing {
+                if wallClockSessionStartTime == nil { wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate }
+            } else { recordListeningSession() }
+            updateNowPlayingPlaybackInfo()
+        }
+    }
+
 
     func setupAudioSessionObservers() {
         interruptionObserverToken = NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] notification in
@@ -49,6 +50,7 @@ extension AudioPlaybackEngine {
                 guard let self = self else { return }
                 switch type {
                 case .began:
+                    AppAudioSession.shared.invalidate(reason: "interruption")
                     self.wasPlayingBeforeInterruption = self.isPlaying
                     if #available(iOS 14.5, *) {
                         if let reasonValue = userInfo[AVAudioSessionInterruptionReasonKey] as? UInt,
@@ -114,6 +116,7 @@ extension AudioPlaybackEngine {
         mediaServicesLostObserverToken = NotificationCenter.default.addObserver(forName: AVAudioSession.mediaServicesWereLostNotification, object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
+                AppAudioSession.shared.invalidate(reason: "media-services-lost")
                 self.wasPlayingBeforeMediaServicesLoss = self.isPlaying || (self.coordinator.contract?.desiredPlayIntent == .playing)
                 self.pause()
             }
@@ -123,17 +126,15 @@ extension AudioPlaybackEngine {
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 
-                do {
-                    try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [])
-                    try AVAudioSession.sharedInstance().setActive(true)
-                } catch {
-                    Log.audio.error("Failed to reset audio session: \(error.localizedDescription, privacy: .public)")
-                }
-                
+                AppAudioSession.shared.invalidate(reason: "media-services-reset")
+
                 let wasPlaying = self.wasPlayingBeforeMediaServicesLoss
                 self.wasPlayingBeforeMediaServicesLoss = false
                 
                 if !self.coordinator.isAppleActive {
+                    self.cancelPendingSeek()
+                    self.removeTimeObserver()
+                    self.removeQueuedItems()
                     self.queuePlayer = AVQueuePlayer()
                     self.queuePlayer?.automaticallyWaitsToMinimizeStalling = false
                     self.setupTimeObserver()
@@ -141,7 +142,7 @@ extension AudioPlaybackEngine {
                     self.setupPlayerObservers()
                     
                     for chunk in self.chunks {
-                        self.queuePlayer?.insert(AVPlayerItem(url: chunk.url), after: nil)
+                        self.insertQueuedItem(AVPlayerItem(url: chunk.url))
                     }
                     
                     if wasPlaying {

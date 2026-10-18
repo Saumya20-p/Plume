@@ -9,9 +9,9 @@ import UIKit
 extension AudioPlaybackEngine {
     /// Retire a session before dismissing or deleting its backing chapter.
     public func stopAndRelease() {
+        cancelPendingSeek()
         AudioGenerationManager.shared.cancelCurrentGeneration()
         pause()
-        cancelPendingSeek()
         clearMemory()
         coordinator.releaseSession()
         removeTimeObserver()

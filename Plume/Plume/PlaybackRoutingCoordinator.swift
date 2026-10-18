@@ -182,6 +182,16 @@ final class PlaybackRoutingCoordinator {
 
     // MARK: - Playback Commands
 
+    func requestPlayIntent() {
+        contract?.requestPlay()
+        notifyState()
+    }
+
+    func reportAudioSessionFailure(_ error: Error) {
+        lastError = error.localizedDescription
+        notifyState()
+    }
+
     @discardableResult
     func play() -> Bool {
         guard isAppleActive else {

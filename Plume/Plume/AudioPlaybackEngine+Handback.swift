@@ -8,7 +8,7 @@ import UIKit
 
 extension AudioPlaybackEngine {
     func checkKokoroBufferUnderrun() {
-        guard (isPlaying || coordinator.contract?.desiredPlayIntent == .playing), !coordinator.isAppleActive, currentDocument != nil else { return }
+        guard pendingSeek == nil, (isPlaying || coordinator.contract?.desiredPlayIntent == .playing), !coordinator.isAppleActive, currentDocument != nil else { return }
         
         let runway = bufferedTime - currentTime
         let itemsCount = queuePlayer?.items().count ?? 0
@@ -22,7 +22,7 @@ extension AudioPlaybackEngine {
     }
 
     func triggerSpeculativeHandbackPreparation(for doc: Document) {
-        guard coordinator.isFallbackActive else { return }
+        guard pendingSeek == nil, coordinator.isFallbackActive else { return }
         
         let targetSegmentIndex = coordinator.currentOrUpcomingSegmentIndex
         guard targetSegmentIndex < coordinator.segmentsCount else {
@@ -39,7 +39,7 @@ extension AudioPlaybackEngine {
     }
 
     func resumeFromHandback(chunks: [AudioChunk], session: PlaybackGenerationSession?) {
-        guard let doc = currentDocument, !chunks.isEmpty else { return }
+        guard pendingSeek == nil, let doc = currentDocument, !chunks.isEmpty else { return }
         Log.audio.info("AudioPlaybackEngine resuming Kokoro playback from handback with \(chunks.count) chunk(s).")
 
         // 1. Activate session gate if provided
@@ -49,7 +49,7 @@ extension AudioPlaybackEngine {
 
         // 2. Tear down any residual Apple Speech playback and clear old Kokoro items
         queuePlayer?.pause()
-        queuePlayer?.removeAllItems()
+        removeQueuedItems()
         self.chunks.removeAll()
 
         // 3. Set the virtualBaseOffset to current progress or the start of the first chunk
@@ -68,7 +68,7 @@ extension AudioPlaybackEngine {
             )
             playedChunks.append(playedChunk)
             runningOffset += chunk.duration
-            queuePlayer?.insert(AVPlayerItem(url: chunk.fileURL), after: nil)
+            insertQueuedItem(AVPlayerItem(url: chunk.fileURL))
         }
 
         self.chunks = playedChunks
@@ -78,9 +78,8 @@ extension AudioPlaybackEngine {
         let shouldPlay = self.isPlaying || (self.coordinator.contract?.desiredPlayIntent == .playing)
         isGenerationActive = true
         if shouldPlay {
-            queuePlayer?.play()
-            queuePlayer?.rate = playbackRate
             isPlaying = true
+            resumeQueuedPlayback()
             wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
         } else {
             queuePlayer?.pause()

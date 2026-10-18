@@ -25,6 +25,39 @@ final class UIExperimentUITests: XCTestCase {
             .press(forDuration: 0.1, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)))
     }
 
+    @MainActor func testFinalParagraphBlurAndFollow() throws {
+        for wrapped in [false, true] {
+            let variant = wrapped ? "wrapped" : "short"
+            let app = launch(reader: true, theme: "Muted", extra:
+                ["--ui-experiment-final-paragraph"] + (wrapped ? ["--ui-experiment-wrapped-final"] : []))
+            let markers = app.buttons["fixture.visualMarkers"]
+            XCTAssertTrue(markers.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["Play"].exists, "Visual markers must not claim audio playback")
+            let window = app.windows.firstMatch
+            // Bring the active highlight through the dock's transition while
+            // playback is paused. This must remain ordinary manual browsing.
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.27))
+                .press(forDuration: 0.1, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.77)), withVelocity: .slow, thenHoldForDuration: 0.2)
+            let returnButton = app.buttons["Return to Current Word"]
+            XCTAssertTrue(returnButton.waitForExistence(timeout: 3))
+            capture("final-\(variant)-manual-transition-Muted", app: app)
+            returnButton.tap()
+            XCTAssertTrue(returnButton.waitForNonExistence(timeout: 3))
+            markers.tap()
+            let stopped = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Run visual markers"), object: markers)
+            XCTAssertEqual(XCTWaiter.wait(for: [stopped], timeout: 25), .completed)
+            XCTAssertTrue(app.buttons["Play"].exists)
+            capture("final-\(variant)-completed-Muted", app: app)
+            // After visual completion, browsing stays paused until Return.
+            browseReader(app)
+            XCTAssertTrue(returnButton.waitForExistence(timeout: 3))
+            XCTAssertEqual(returnButton.value as? String, wrapped ? "end" : "clear")
+            returnButton.tap()
+            XCTAssertTrue(returnButton.waitForNonExistence(timeout: 3))
+            app.terminate()
+        }
+    }
+
     @MainActor func testSavedPositionAndCompactReturn() throws {
         for theme in ["Basic", "Warm", "Muted"] {
             let app = launch(reader: true, theme: theme, extra: ["--ui-experiment-restored-position", "--ui-experiment-position"])
@@ -177,6 +210,138 @@ final class UIExperimentUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Last Year"].exists)
         capture("statistics-year", app: app)
     }
+    @MainActor func testDockRemainsFixedAcrossReaderBrowsing() throws {
+        let app = launch(reader: true, extra: ["--ui-experiment-position"])
+        let position = app.otherElements["Playback Position"]
+        XCTAssertTrue(position.waitForExistence(timeout: 5))
+        let initialDock = position.frame
+        browseReader(app)
+        let pill = app.buttons["Return to Current Word"]
+        XCTAssertTrue(pill.waitForExistence(timeout: 3))
+        XCTAssertEqual(position.frame.minY, initialDock.minY, accuracy: 1)
+        XCTAssertEqual(position.frame.height, initialDock.height, accuracy: 1)
+        browseReader(app)
+        XCTAssertEqual(pill.value as? String, "The")
+        XCTAssertEqual(position.frame.minY, initialDock.minY, accuracy: 1)
+        pill.tap()
+        XCTAssertTrue(pill.waitForNonExistence(timeout: 3))
+        XCTAssertEqual(position.frame.minY, initialDock.minY, accuracy: 1)
+    }
+
+    @MainActor func testPhysicalWordTapSeekContinuity() throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Audible word-tap continuity requires a physical iPhone")
+        #else
+        let app = launch(reader: true, extra: ["--playback-seek-diagnostics"])
+        XCTAssertTrue(app.buttons["Play"].waitForExistence(timeout: 5))
+        let position = app.otherElements["Playback Position"]
+        app.buttons["Play"].tap()
+        let reachedSecondParagraph = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let time = (position.value as? String ?? "").components(separatedBy: " of ")[0].split(separator: ":").compactMap { Int($0) }
+            return time.count == 2 && time[0] * 60 + time[1] >= 18
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [reachedSecondParagraph], timeout: 60), .completed)
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+            .press(forDuration: 0.1, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.65)))
+        let firstParagraph = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Paragraph 1.")).firstMatch
+        XCTAssertTrue(firstParagraph.isHittable)
+        firstParagraph.tap()
+        try assertWordTapPlaybackAdvances(app, position: position)
+        capture("word-tap-backward", app: app)
+        // Move beyond the initial generated runway, then select visible passage text.
+        for _ in 0..<6 { browseReader(app) }
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.4)).tap()
+        try assertWordTapPlaybackAdvances(app, position: position)
+        for x in [0.25, 0.45, 0.7] {
+            window.coordinate(withNormalizedOffset: CGVector(dx: x, dy: 0.4)).tap()
+        }
+        try assertWordTapPlaybackAdvances(app, position: position)
+        capture("word-tap-latest-destination", app: app)
+        app.buttons["Stop Playback and Close Player"].tap()
+        #endif
+    }
+
+    @MainActor private func assertWordTapPlaybackAdvances(_ app: XCUIApplication, position: XCUIElement) throws {
+        XCTAssertTrue(app.buttons["Pause Playback"].waitForExistence(timeout: 15))
+        let before = position.value as? String
+        let advances = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (position.value as? String) != before
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [advances], timeout: 15), .completed,
+                       "Word-tap playback must continue without pressing Play again")
+        XCTAssertFalse(app.alerts["Generation Error"].exists)
+    }
+
+    @MainActor func testFocusedPhysicalPlayerRefinement() throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Playback and startup responsiveness require a physical iPhone")
+        #else
+        let app = launch(reader: true, extra: ["-voicePreferences.schemaVersion", "1", "-voicePreferences.primary.kind", "kokoro", "-voicePreferences.primary.identifier", "af_heart"])
+        XCTAssertTrue(app.buttons["Play"].waitForExistence(timeout: 5))
+        let position = app.otherElements["Playback Position"]
+        let initial = position.value as? String
+        app.buttons["Play"].tap()
+        let started = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (position.value as? String) != initial
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [started], timeout: 45), .completed)
+        XCTAssertFalse(app.alerts["Generation Error"].exists)
+        let dockFrame = position.frame
+        browseReader(app)
+        let pill = app.buttons["Return to Current Word"]
+        XCTAssertTrue(pill.waitForExistence(timeout: 1))
+        XCTAssertEqual(position.frame.minY, dockFrame.minY, accuracy: 1)
+        let token = pill.value as? String
+        let changed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            pill.exists && (pill.value as? String) != token
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 1.5), .completed)
+        pill.tap()
+        XCTAssertTrue(pill.waitForNonExistence(timeout: 2))
+        browseReader(app)
+        XCTAssertTrue(pill.waitForExistence(timeout: 1))
+        XCTAssertTrue(pill.waitForNonExistence(timeout: 6))
+        app.buttons["Pause Playback"].tap()
+        XCTAssertTrue(app.buttons["Play"].waitForExistence(timeout: 2))
+        app.buttons["Play"].tap()
+        let beforeBackground = position.value as? String
+        XCUIDevice.shared.press(.home)
+        let interval = expectation(description: "One background handoff")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { interval.fulfill() }
+        wait(for: [interval], timeout: 7)
+        app.activate()
+        let advancing = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (position.value as? String) != beforeBackground
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [advancing], timeout: 15), .completed)
+        app.buttons["Pause Playback"].tap()
+        XCTAssertTrue(app.buttons["Play"].waitForExistence(timeout: 2))
+        // Both drags start in the middle and finish inside the screen.
+        let middle = position.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+        let right = position.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: position.frame.width - 24, dy: 2))
+        let left = position.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 24, dy: 2))
+        middle.press(forDuration: 0.1, thenDragTo: right)
+        let atEnd = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let parts = (position.value as? String ?? "").replacingOccurrences(of: "approximately ", with: "").components(separatedBy: " of ")
+            return parts.count == 2 && parts[0] == parts[1]
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [atEnd], timeout: 5), .completed)
+        capture("focused-device-endpoint-end", app: app)
+        middle.press(forDuration: 0.1, thenDragTo: left)
+        let atStart = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (position.value as? String ?? "").hasPrefix("0:00 of ")
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [atStart], timeout: 5), .completed)
+        capture("focused-device-endpoint-start", app: app)
+        app.buttons["Up Next"].tap()
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 3))
+        app.buttons["Done"].tap()
+        app.buttons["Stop Playback and Close Player"].tap()
+        XCTAssertTrue(app.buttons["Add to Library"].waitForExistence(timeout: 5))
+        #endif
+    }
+
     @MainActor func testPhysicalPlaybackSeekingAndBackgroundHandoff() throws {
         #if targetEnvironment(simulator)
         throw XCTSkip("Metal synthesis and background handoff require a physical iPhone")

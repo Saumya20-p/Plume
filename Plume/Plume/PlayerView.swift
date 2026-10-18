@@ -20,8 +20,13 @@ struct PlayerView: View, Equatable {
     @State private var interactionRequest = 0
     @State private var controlsSheetPresented = false
     @State private var readerVisible = false
-    @State private var dockHeight: CGFloat = 0
     @State private var wordDisplay = ReaderWordDisplay()
+    @State private var controlsVisibility = ReaderControlsVisibility()
+    @State private var followStatus = ReaderFollowStatus()
+    @State private var heldControls: Set<String> = []
+    #if DEBUG
+    @State private var visualMarkersAdvancing = false
+    #endif
     @ScaledMetric(relativeTo: .subheadline) private var returnPillWidth: CGFloat = 220
     @ScaledMetric(relativeTo: .subheadline) private var returnLineHeight: CGFloat = 20
     @Environment(\.scenePhase) private var scenePhase
@@ -31,6 +36,7 @@ struct PlayerView: View, Equatable {
     @Environment(\.accessibilityReduceTransparency) private var systemReduceTransparency
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var appearanceManager = AppearanceManager.shared
     
@@ -48,13 +54,68 @@ struct PlayerView: View, Equatable {
         return systemReduceTransparency
     }
 
+    private var readerVoiceOver: Bool {
+        #if DEBUG
+        if UIExperimentFixture.autoHideEnabled && ProcessInfo.processInfo.arguments.contains("--ui-experiment-voiceover") { return true }
+        #endif
+        return voiceOverEnabled || UIAccessibility.isVoiceOverRunning
+    }
+
+    private var visibilityContext: ReaderControlsContext {
+        ReaderControlsContext(
+            documentID: document.id,
+            enabled: appearanceManager.autoHideReaderControls,
+            readerVisible: readerVisible, sceneActive: scenePhase == .active,
+            playing: readerPlaybackAdvancing && playbackEngine.currentDocument?.id == document.id,
+            following: followStatus.documentID == document.id && followStatus.hasDestination && !isBrowsing,
+            interacting: followStatus.isInteracting || !heldControls.isEmpty,
+            seeking: playbackEngine.pendingSeek != nil,
+            presenting: showQueueSheet || showAppearanceSettings || controlsSheetPresented || generationManager.lastError != nil,
+            voiceOver: readerVoiceOver
+        )
+    }
+
+    private func readerInteraction() {
+        controlsVisibility.reveal()
+        interactionRequest += 1
+    }
+
+    private func holdControl(_ id: String, _ held: Bool) {
+        let changed: Bool
+        if held { changed = heldControls.insert(id).inserted }
+        else { changed = heldControls.remove(id) != nil }
+        // Native toolbar disappearance and gesture teardown can both report
+        // release. A duplicate release is not a new reader interaction.
+        guard changed else { return }
+        controlsVisibility.update(visibilityContext)
+        controlsVisibility.reveal()
+    }
+
+    private var automaticallyStartsPlayback: Bool {
+        #if DEBUG
+        // Visual fixtures own their markers and must not race real speech.
+        if UIExperimentFixture.autoHideEnabled || UIExperimentFixture.finalParagraphEnabled { return false }
+        #endif
+        return document.audioFileURL != nil || playbackEngine.isAppleActive
+    }
+
+    private var readerPlaybackAdvancing: Bool {
+        #if DEBUG
+        if UIExperimentFixture.finalParagraphEnabled || UIExperimentFixture.autoHideEnabled { return visualMarkersAdvancing }
+        #endif
+        return playbackEngine.isPlaying
+    }
+
     var body: some View {
         let activeTheme = appearanceManager.activeTheme(colorScheme: colorScheme)
         
         GeometryReader { geometry in
             PlayableTextView(
                 text: document.bodyText,
-                currentWord: progress.currentWord,
+                documentID: document.id,
+                currentWord: playbackEngine.currentDocument?.id == document.id ? progress.currentWord : nil,
+                appearanceManager: appearanceManager,
+                typographyRevision: appearanceManager.typographyRevision,
                 readerFont: appearanceManager.readerFont,
                 fontSize: appearanceManager.fontSize,
                 isBold: appearanceManager.isBold,
@@ -64,22 +125,34 @@ struct PlayerView: View, Equatable {
                 textColor: UIColor(activeTheme.textColor),
                 backgroundColor: UIColor(activeTheme.backgroundColor),
                 headerClearance: geometry.safeAreaInsets.top,
-                dockHeight: dockHeight,
+                showsReturnPill: isBrowsing,
                 reduceTransparency: reduceTransparency,
                 isWarmTheme: activeTheme == .warm,
-                canAutoResume: readerVisible && playbackEngine.isPlaying && scenePhase == .active &&
-                    !showQueueSheet && !showAppearanceSettings && !controlsSheetPresented && !voiceOverEnabled,
+                highlightPalette: ReaderHighlightPalette(theme: activeTheme, increasedContrast: colorSchemeContrast == .increased),
+                canAutoResume: readerVisible && readerPlaybackAdvancing && scenePhase == .active &&
+                    !showQueueSheet && !showAppearanceSettings && !controlsSheetPresented && !readerVoiceOver,
                 reduceMotion: reduceMotion,
+                isSeeking: playbackEngine.pendingSeek != nil,
+                controlsHidden: controlsVisibility.isHidden,
+                onSurfaceInteraction: {
+                    let consume = controlsVisibility.isHidden
+                    readerInteraction()
+                    return consume
+                },
+                onFollowStatusChanged: { status in
+                    guard status.documentID == document.id else { return }
+                    followStatus = status
+                },
                 returnRequest: returnRequest,
                 interactionRequest: interactionRequest,
                 onBrowsingChanged: { isBrowsing = $0 },
                 onWordTapped: { _, charIndex in
-                    playbackEngine.seek(toCharIndex: charIndex)
-                    if !playbackEngine.isPlaying { playbackEngine.play() }
+                    playbackEngine.seek(toCharIndex: charIndex, playAfterSeek: true)
                 },
                 controls: VStack(spacing: 8) {
                     if isBrowsing {
                         Button {
+                            readerInteraction()
                             isBrowsing = false
                             returnRequest += 1
                         } label: {
@@ -117,14 +190,15 @@ struct PlayerView: View, Equatable {
                         showQueueSheet: $showQueueSheet,
                         reduceTransparency: reduceTransparency,
                         onSheetPresentationChanged: { controlsSheetPresented = $0 },
-                        onInteraction: { interactionRequest += 1 },
+                        onInteraction: readerInteraction,
+                        onHoldChanged: holdControl,
                         onDismiss: {
                             isExplicitlyDismissing = true
                             playbackEngine.presentedPlayerDocument = nil
                             dismiss()
                         }
                     )
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { dockHeight = $0 }
+                    .background { ReaderDockMeasurement().allowsHitTesting(false) }
                 }
                 .environment(\.colorScheme, .dark)
                 .environment(\.dynamicTypeSize, dynamicTypeSize)
@@ -133,12 +207,48 @@ struct PlayerView: View, Equatable {
             .ignoresSafeArea(edges: [.top, .bottom])
         }
         .background(activeTheme.backgroundColor.ignoresSafeArea())
+        #if DEBUG
+        .overlay(alignment: .topTrailing) {
+            if UIExperimentFixture.autoHideEnabled {
+                VStack(spacing: 2) {
+                    Text("Simulated markers · no speech")
+                        .font(.caption2)
+                    Button(visualMarkersAdvancing ? "Pause markers" : "Resume markers") {
+                        readerInteraction()
+                        visualMarkersAdvancing.toggle()
+                    }
+                    .accessibilityIdentifier("fixture.markerPlayback")
+                    Text(controlsVisibility.isHidden ? "hidden" : "visible")
+                        .accessibilityIdentifier("fixture.controlsVisibility")
+                    Text(isBrowsing ? "browsing" : "following")
+                        .accessibilityIdentifier("fixture.followState")
+                    Text(String(progress.currentWord?.rangeLocation ?? -1))
+                        .accessibilityIdentifier("fixture.markerLocation")
+                }
+                .font(.caption2)
+                .padding(4)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        #endif
         .navigationTitle(document.title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarVisibility(controlsVisibility.isHidden ? .hidden : .visible, for: .navigationBar)
         .toolbarBackground(reduceTransparency ? .visible : .hidden, for: .navigationBar)
         .toolbarBackground(activeTheme.backgroundColor, for: .navigationBar)
         .toolbarColorScheme(activeTheme == .warm ? .light : .dark, for: .navigationBar)
         .toolbar {
+            #if DEBUG
+            if UIExperimentFixture.finalParagraphEnabled {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(visualMarkersAdvancing ? "Stop visual markers" : "Run visual markers") {
+                        visualMarkersAdvancing.toggle()
+                    }
+                    .font(.caption)
+                    .accessibilityIdentifier("fixture.visualMarkers")
+                }
+            }
+            #endif
             ToolbarItem(placement: .principal) {
                 Text(document.title)
                     .font(.headline)
@@ -157,15 +267,18 @@ struct PlayerView: View, Equatable {
                         .foregroundStyle(activeTheme.textColor)
                 }
                 .accessibilityLabel("Minimize Player")
+                .modifier(ReaderControlHoldObserver { holdControl("minimize", $0) })
             }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
+                    readerInteraction()
                     showAppearanceSettings = true
                 } label: {
                     Image(systemName: "textformat.size")
                         .foregroundStyle(activeTheme.textColor)
                 }
                 .accessibilityLabel("Reading Appearance")
+                .modifier(ReaderControlHoldObserver { holdControl("appearance", $0) })
             }
         }
         .sheet(isPresented: $showQueueSheet) {
@@ -178,9 +291,35 @@ struct PlayerView: View, Equatable {
                 .modifier(UIExperimentEnvironment())
                 #endif
         }
+        .onChange(of: visibilityContext, initial: true) { _, context in controlsVisibility.update(context) }
+        .onChange(of: dynamicTypeSize) { readerInteraction() }
+        .onChange(of: scenePhase) {
+            if scenePhase != .active { heldControls.removeAll() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+            readerInteraction()
+        }
+        .onChange(of: document.id) {
+            heldControls.removeAll()
+            followStatus = ReaderFollowStatus()
+            controlsVisibility.update(visibilityContext)
+            controlsVisibility.reveal()
+        }
         .onChange(of: progress.currentWord, initial: true) { _, _ in updateReturnWord() }
         .onChange(of: playbackEngine.isPlaying) { _, _ in updateReturnWord() }
         .onChange(of: document.id) { _, _ in updateReturnWord() }
+        #if DEBUG
+        .task(id: visualMarkersAdvancing) {
+            guard (UIExperimentFixture.finalParagraphEnabled || UIExperimentFixture.autoHideEnabled), visualMarkersAdvancing else { return }
+            let markers = UIExperimentFixture.autoHideEnabled ? UIExperimentFixture.autoHideMarkers(in: document.bodyText) : UIExperimentFixture.finalParagraphMarkers(in: document.bodyText)
+            for marker in markers {
+                do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+                guard !Task.isCancelled else { return }
+                progress.currentWord = marker
+            }
+            visualMarkersAdvancing = false
+        }
+        #endif
         .onAppear {
             readerVisible = true
             playbackEngine.isPlayerViewPresented = true
@@ -199,7 +338,12 @@ struct PlayerView: View, Equatable {
             }
             
             updateReturnWord()
-            if document.audioFileURL != nil || playbackEngine.isAppleActive {
+            #if DEBUG
+            if UIExperimentFixture.autoHideEnabled {
+                visualMarkersAdvancing = true
+            }
+            #endif
+            if automaticallyStartsPlayback {
                 if !playbackEngine.isPlaying {
                     playbackEngine.play()
                 }
@@ -207,6 +351,8 @@ struct PlayerView: View, Equatable {
         }
         .onDisappear {
             readerVisible = false
+            controlsVisibility.stop()
+            heldControls.removeAll()
             playbackEngine.isPlayerViewPresented = false
             // Don't cancel if audio has finished generating or if we are actively playing and backgrounding.
             // Only cancel in-flight work if the user explicitly closed the player and playback is stopped.
@@ -253,6 +399,7 @@ struct PlayerControlsView: View {
     var reduceTransparency: Bool
     var onSheetPresentationChanged: (Bool) -> Void
     var onInteraction: () -> Void
+    var onHoldChanged: (String, Bool) -> Void
     var onDismiss: () -> Void
     @State private var showSpeedSheet = false
     @State private var showVoiceSheet = false
@@ -270,7 +417,7 @@ struct PlayerControlsView: View {
     }
     
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 8) {
             if verticalSizeClass == .compact {
                 playbackTime.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             } else {
@@ -297,15 +444,15 @@ struct PlayerControlsView: View {
                     showSpeedSheet = true
                 }) {
                     Text(String(format: "%.1fx", playbackEngine.playbackRate))
-                        .font(.caption.bold().monospacedDigit())
+                        .font(.footnote.bold().monospacedDigit())
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
                         .foregroundStyle(.primary)
                         .padding(.horizontal, 4)
-                        .frame(minWidth: 44, minHeight: 44)
+                        .frame(minWidth: 48, minHeight: 48)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(ScaleButtonStyle())
+                .buttonStyle(ScaleButtonStyle(onPressChanged: { onHoldChanged("speed", $0) }))
                 .accessibilityLabel("Reading Speed")
                 .accessibilityValue(String(format: "%.1f times", playbackEngine.playbackRate))
                 
@@ -320,12 +467,12 @@ struct PlayerControlsView: View {
                     playbackEngine.skipBackward() 
                 }) {
                     Image(systemName: "gobackward.\(skipVal)")
-                        .font(.system(size: 17))
+                        .font(.title3)
                         .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
+                        .frame(minWidth: 48, minHeight: 48)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(ScaleButtonStyle())
+                .buttonStyle(ScaleButtonStyle(onPressChanged: { onHoldChanged("back", $0) }))
                 .accessibilityLabel("Skip Back \(skipVal) Seconds")
                 
                 Spacer()
@@ -376,7 +523,7 @@ struct PlayerControlsView: View {
                             }
                         )
                 }
-                .buttonStyle(ScaleButtonStyle())
+                .buttonStyle(ScaleButtonStyle(onPressChanged: { onHoldChanged("play", $0) }))
                 .accessibilityLabel(isGeneratingAudio ? "Cancel Audio Generation" : playbackEngine.isPlaying ? "Pause Playback" : "Play")
                 
                 Spacer()
@@ -387,12 +534,12 @@ struct PlayerControlsView: View {
                     playbackEngine.skipForward() 
                 }) {
                     Image(systemName: "goforward.\(skipVal)")
-                        .font(.system(size: 17))
+                        .font(.title3)
                         .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
+                        .frame(minWidth: 48, minHeight: 48)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(ScaleButtonStyle())
+                .buttonStyle(ScaleButtonStyle(onPressChanged: { onHoldChanged("forward", $0) }))
                 .accessibilityLabel("Skip Forward \(skipVal) Seconds")
                 
                 Spacer()
@@ -405,12 +552,12 @@ struct PlayerControlsView: View {
                     showVoiceSheet = true
                 }) {
                     Image(systemName: "person.wave.2.fill")
-                        .font(.system(size: 17))
+                        .font(.title3)
                         .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
+                        .frame(minWidth: 48, minHeight: 48)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(ScaleButtonStyle())
+                .buttonStyle(ScaleButtonStyle(onPressChanged: { onHoldChanged("voice", $0) }))
                 .accessibilityLabel("Choose Voice")
                 if verticalSizeClass == .compact {
                     Spacer()
@@ -419,20 +566,16 @@ struct PlayerControlsView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 10)
-        .padding(.top, 8)
+        .padding(.bottom, 12)
+        .padding(.top, 12)
         .contentShape(Rectangle()) // Capture all taps so they don't fall through to text!
-        .background(
-            Color(uiColor: .secondarySystemBackground).opacity(reduceTransparency ? 1 : 0.55),
-            in: RoundedRectangle(cornerRadius: 24, style: .continuous)
-        )
+        .modifier(GlassmorphicContainer.playerDock(cornerRadius: PlayerDockMetrics.cornerRadius,
+                                                   reduceTransparency: reduceTransparency))
         .overlay(alignment: .top) {
             GeometryReader { geometry in
                 timeline(dockHeight: geometry.size.height)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 3)
 
         .onChange(of: showSpeedSheet || showVoiceSheet) { _, presented in
             onSheetPresentationChanged(presented)
@@ -457,6 +600,7 @@ struct PlayerControlsView: View {
             estimatedDuration: document.estimatedDuration,
             isFullyGenerated: document.audioFileURL != nil,
             onInteraction: onInteraction,
+            onScrubbingChanged: { onHoldChanged("scrubber", $0) },
             onSeek: { playbackEngine.seek(to: $0) }
         )
     }
@@ -480,11 +624,12 @@ struct PlayerControlsView: View {
             showQueueSheet = true
         } label: {
             Image(systemName: "list.bullet")
-                .font(.system(size: 17))
+                .font(.title3)
                 .foregroundStyle(.primary)
-                .frame(width: 44, height: 44)
+                .frame(minWidth: 48, minHeight: 48)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(ScaleButtonStyle())
+        .buttonStyle(ScaleButtonStyle(onPressChanged: { onHoldChanged("queue", $0) }))
         .accessibilityLabel("Up Next")
     }
 
@@ -496,20 +641,37 @@ struct PlayerControlsView: View {
             onDismiss()
         } label: {
             Image(systemName: "xmark")
-                .font(.system(size: 17))
+                .font(.title3)
                 .foregroundStyle(.secondary)
-                .frame(width: 44, height: 44)
+                .frame(minWidth: 48, minHeight: 48)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(ScaleButtonStyle())
+        .buttonStyle(ScaleButtonStyle(onPressChanged: { onHoldChanged("close", $0) }))
         .accessibilityLabel("Stop Playback and Close Player")
     }
 
 }
 
+/// Observe native toolbar presses without replacing their system button style.
+private struct ReaderControlHoldObserver: ViewModifier {
+    let onHoldChanged: (Bool) -> Void
+    @GestureState private var held = false
+
+    func body(content: Content) -> some View {
+        content
+            .simultaneousGesture(DragGesture(minimumDistance: 0).updating($held) { _, state, _ in state = true })
+            .onChange(of: held) { _, active in onHoldChanged(active) }
+            .onDisappear { if held { onHoldChanged(false) } }
+    }
+}
+
 struct ScaleButtonStyle: ButtonStyle {
+    var onPressChanged: ((Bool) -> Void)? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .onChange(of: configuration.isPressed) { _, pressed in onPressChanged?(pressed) }
+            .onDisappear { if configuration.isPressed { onPressChanged?(false) } }
             .opacity(configuration.isPressed ? 0.7 : 1.0)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.9 : 1.0)
             .animation(reduceMotion ? nil : .interactiveSpring(response: 0.2, dampingFraction: 0.5, blendDuration: 0.5), value: configuration.isPressed)
@@ -523,7 +685,9 @@ struct LiveEdgeScrubber: View {
     let estimatedDuration: TimeInterval
     let isFullyGenerated: Bool
     let onInteraction: () -> Void
+    var onScrubbingChanged: (Bool) -> Void = { _ in }
     let onSeek: (TimeInterval) -> Void
+    @GestureState private var isScrubbing = false
     @State private var dragTime: TimeInterval?
 
     private var totalTime: TimeInterval {
@@ -532,10 +696,10 @@ struct LiveEdgeScrubber: View {
     }
 
     private func rim(color: Color, width: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 24, style: .continuous)
+        RoundedRectangle(cornerRadius: PlayerDockMetrics.cornerRadius, style: .continuous)
             .strokeBorder(color, lineWidth: 3)
             .frame(width: width, height: max(48, dockHeight))
-            .mask(alignment: .top) { Rectangle().frame(height: 24) }
+            .mask(alignment: .top) { Rectangle().frame(height: 8) }
             .allowsHitTesting(false)
     }
 
@@ -546,44 +710,50 @@ struct LiveEdgeScrubber: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let track = PlayerScrubberGeometry(width: geometry.size.width)
             let validTotal = max(1, totalTime)
             let displayTime = dragTime ?? currentTime
             let progressRatio = CGFloat(max(0, min(1, displayTime / validTotal)))
             let bufferRatio = isFullyGenerated ? 1 : CGFloat(max(0, min(1, generatedDuration / validTotal)))
             ZStack(alignment: .topLeading) {
                 // Draw the very same continuous rounded rectangle as the dock,
-                // then expose its upper rim. Horizontal masks preserve seek mapping
-                // while carrying progress around both curved ends.
+                // then expose a shallow upper rim. All layers share the reachable track.
                 rim(color: Color.secondary.opacity(0.18), width: geometry.size.width)
                 rim(color: Color.secondary.opacity(0.35), width: geometry.size.width)
-                    .mask(alignment: .leading) { Rectangle().frame(width: geometry.size.width * bufferRatio) }
+                    .mask(alignment: .leading) { Rectangle().frame(width: track.fillWidth(for: Double(bufferRatio))) }
                 rim(color: DesignSystem.accent, width: geometry.size.width)
-                    .mask(alignment: .leading) { Rectangle().frame(width: geometry.size.width * progressRatio) }
+                    .mask(alignment: .leading) { Rectangle().frame(width: track.fillWidth(for: Double(progressRatio))) }
                 if dragTime != nil {
                     Circle()
                         .fill(DesignSystem.accent)
                         .frame(width: 8, height: 8)
-                        .offset(x: max(24, min(geometry.size.width - 24, geometry.size.width * progressRatio)) - 4, y: 0)
+                        .offset(x: track.x(for: Double(progressRatio)) - 4, y: 0)
                 }
             }
             .frame(width: geometry.size.width, height: 44, alignment: .topLeading)
             .contentShape(RimScrubberHitArea())
             .gesture(
                 DragGesture(minimumDistance: 0)
+                    .updating($isScrubbing) { _, state, _ in state = true }
                     .onChanged { value in
                         onInteraction()
-                        let fraction = max(0, min(1, value.location.x / max(1, geometry.size.width)))
+                        let fraction = track.fraction(at: value.location.x)
                         dragTime = fraction * totalTime
                     }
-                    .onEnded { _ in
+                    .onEnded { value in
                         onInteraction()
-                        if let dragTime { onSeek(dragTime) }
+                        onSeek(track.fraction(at: value.location.x) * totalTime)
                         dragTime = nil
                     }
             )
         }
         .frame(height: 44)
         .accessibilityElement(children: .ignore)
+        .onChange(of: isScrubbing) { _, active in
+            onScrubbingChanged(active)
+            if !active { dragTime = nil }
+        }
+        .onDisappear { onScrubbingChanged(false) }
         .accessibilityLabel("Playback Position")
         .accessibilityValue("\(positionLabel(currentTime)) of \(isFullyGenerated ? "" : "approximately ")\(positionLabel(totalTime))")
         .accessibilityAdjustableAction { direction in
