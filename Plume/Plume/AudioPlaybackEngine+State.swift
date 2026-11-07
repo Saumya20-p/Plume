@@ -10,7 +10,7 @@ extension AudioPlaybackEngine {
     /// Retire a session before dismissing or deleting its backing chapter.
     public func stopAndRelease() {
         cancelPendingSeek()
-        AudioGenerationManager.shared.cancelCurrentGeneration()
+        generationManager.cancelCurrentGeneration()
         pause()
         clearMemory()
         coordinator.releaseSession()
@@ -27,8 +27,8 @@ extension AudioPlaybackEngine {
         currentTime = 0
         duration = 0
         virtualBaseOffset = 0
-        PlaybackProgress.shared.currentWord = nil
-        PlaybackProgress.shared.currentTime = 0
+        currentWord = nil
+        currentTime = 0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         setRemoteCommandsEnabled(false)
         evaluateAudioSession()
@@ -44,45 +44,38 @@ extension AudioPlaybackEngine {
     }
 
     func recordListeningSession() {
-        if let startTime = wallClockSessionStartTime {
-            let sessionDuration = Date().timeIntervalSinceReferenceDate - startTime
-            if sessionDuration > 2.0, let doc = currentDocument, let context = doc.modelContext {
-                let words = Int((sessionDuration / 60.0) * 150.0 * Double(playbackRate))
-                let session = ListeningSession(
-                    documentId: doc.id,
-                    secondsListened: sessionDuration,
-                    wordsListened: words,
-                    playbackSpeed: Double(playbackRate)
-                )
-                context.insert(session)
-                try? context.save()
-            }
-            wallClockSessionStartTime = nil
+        let values = listeningAccumulator.take(at: listeningClock())
+        // A final word may finish just after the producer's stop notification.
+        // Preserve it in a zero-time row; aggregate WPM uses the earlier time row.
+        guard values.seconds > 0 || values.words > 0,
+              let document = currentDocument, let context = document.modelContext else { return }
+        let session = ListeningSession(documentId: document.id, secondsListened: values.seconds,
+                                       wordsListened: values.words, playbackSpeed: Double(playbackRate), measurementVersion: 2)
+        context.insert(session)
+        do { try context.save() } catch {
+            PlaybackDiagnostics.shared.record("listening-save-failed code=\((error as NSError).code)")
         }
     }
 
     func saveDocumentProgress() {
-        if let doc = currentDocument, duration > 0 {
-            if doc.progress < 1.0 {
-                doc.progress = currentTime / duration
-            }
-            doc.lastReadCharIndex = PlaybackProgress.shared.currentWord?.rangeLocation ?? doc.lastReadCharIndex
-            lastProgressSaveTime = currentTime
-            if let context = doc.modelContext {
-                try? context.save()
-            }
+        guard let document = currentDocument else { return }
+        if coordinator.contract?.lifecycle == .completed { document.lastReadCharIndex = document.bodyText.utf16.count }
+        else { document.lastReadCharIndex = min(document.bodyText.utf16.count, max(0, resumeSourceOffset)) }
+        document.progress = document.readingProgress
+        lastProgressSaveTime = currentTime
+        do { try document.modelContext?.save() } catch {
+            PlaybackDiagnostics.shared.record("progress-save-failed code=\((error as NSError).code)")
         }
     }
 
     func updateNowPlayingPlaybackInfo() {
         guard var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
         
-        let isFullyGenerated = currentDocument?.audioFileURL != nil
-        let displayDuration = isFullyGenerated ? duration : max(duration, currentDocument?.estimatedDuration ?? duration)
+        let displayDuration = displayTotalDuration
         
         nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
         nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = displayDuration
-        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
+        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = actualPlaybackActive ? playbackRate : 0.0
         
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
     }

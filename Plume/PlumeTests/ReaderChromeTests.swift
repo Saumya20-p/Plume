@@ -71,7 +71,9 @@ import Testing
         let bounds = CGRect(x: 0, y: 0, width: 393, height: 852)
         let geometry = ReaderHiddenStatusFallbackGeometry(bounds: bounds, statusBottom: 62)
         #expect(geometry.frame == CGRect(x: 0, y: 0, width: 393, height: 94))
-        #expect(geometry.locations.map(\.doubleValue) == [0, 66.0 / 94, 74.0 / 94, 86.0 / 94, 1])
+        let actualLocations = geometry.locations.map(\.doubleValue)
+        let expectedLocations: [Double] = [0, 66.0 / 94, 74.0 / 94, 86.0 / 94, 1]
+        #expect(actualLocations == expectedLocations)
         let noStatus = ReaderHiddenStatusFallbackGeometry(bounds: bounds, statusBottom: 0)
         #expect(noStatus.frame.isEmpty)
         let negativeStatus = ReaderHiddenStatusFallbackGeometry(bounds: bounds, statusBottom: -20)

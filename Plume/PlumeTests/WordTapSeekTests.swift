@@ -26,7 +26,7 @@ struct WordTapSeekTests {
     }
 
     @MainActor private final class Fixture {
-        let engine = AudioPlaybackEngine.shared
+        let engine = AudioPlaybackEngine(observeSystem: false, manager: AudioGenerationManager())
         let document: Document
         let container: ModelContainer
         let file: URL
@@ -34,11 +34,18 @@ struct WordTapSeekTests {
         let gate = CompletionGate()
 
         init(buffered: Bool = true) throws {
-            container = try ModelContainer(for: Document.self, Folder.self,
+            engine.hasPrewarmedSpeech = true
+            engine.audioReadyOverride = { true }
+            engine.prepareAudioOverride = { $0(.success(())) }
+            engine.generationManager.makeStream = { _, _, _ in throw CancellationError() }
+            container = try ModelContainer(for: Document.self, Folder.self, ListeningSession.self,
                                            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
             document = Document(title: "Seek regression", bodyText: "First word. Second paragraph. Third paragraph.")
             container.mainContext.insert(document)
-            file = FileManager.default.temporaryDirectory.appendingPathComponent("seek-\(UUID()).caf")
+            let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent(".scratch/playback-reliability/tests", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            file = root.appendingPathComponent("seek-\(UUID()).caf")
             let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 8000, channels: 1))
             let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16000))
             buffer.frameLength = 16000
@@ -207,7 +214,7 @@ struct WordTapSeekTests {
                                fileURL: fixture.file, duration: 2, timestamps: fixture.timestamps)
         #expect(engine.enqueue(chunk: chunk))
         // Cancel real generation before it can run; the supplied chunk exercises the same enqueue boundary.
-        AudioGenerationManager.shared.cancelCurrentGeneration(preservingPlaybackIntent: true)
+        engine.generationManager.cancelCurrentGeneration(preservingPlaybackIntent: true)
         #expect(engine.pendingSeek?.phase == .positioning)
         #expect(engine.queuePlayer?.rate == 0)
         var events = fixture.gate.events.makeAsyncIterator()
@@ -243,6 +250,23 @@ struct WordTapSeekTests {
         #expect(engine.currentTime == 0.8)
     }
 
+    @Test func completedChapterCanSeekBackWhileRemainingPaused() async throws {
+        let fixture = try Fixture()
+        defer { fixture.close() }
+        let engine = fixture.engine
+        #expect(engine.coordinator.completeAtEOF())
+        var events = fixture.gate.events.makeAsyncIterator()
+        engine.performSeek(to: 0.3)
+        _ = try #require(await events.next())
+        let task = engine.currentSeekTask
+        fixture.gate.finish(0)
+        await task?.value
+        #expect(engine.coordinator.contract?.lifecycle == .active)
+        #expect(engine.coordinator.desiredPlayIntent == .paused)
+        #expect(fixture.document.lastReadCharIndex == 6)
+        #expect(fixture.document.readingProgress < 1)
+    }
+
     @Test func oldGenerationCompletionCannotCancelANewerDebouncedTap() throws {
         let fixture = try Fixture(buffered: false)
         defer { fixture.close() }
@@ -250,10 +274,59 @@ struct WordTapSeekTests {
         let session = KokoroGenerationSessionFactory.make(documentID: fixture.document.id, defaults: .standard)
         engine.beginGenerationSession(session)
         let request = try #require(engine.beginSeek(playAfterSeek: true, characterOffset: 6))
-        engine.finishGeneration(sessionID: session.id)
+        engine.finishGeneration(sessionID: session.id, termination: .retired)
         #expect(engine.isCurrentSeek(request))
         #expect(engine.pendingSeek?.shouldPlay == true)
         #expect(engine.isPlaying)
+    }
+
+    @Test(arguments: [false, true])
+    func bufferedSeekCountsOnlyTraversedWordsIncludingEndFlush(partialWord: Bool) async throws {
+        let fixture = try Fixture()
+        defer { fixture.close() }
+        let engine = fixture.engine
+        var now: TimeInterval = 0
+        engine.listeningClock = { now }
+        var events = fixture.gate.events.makeAsyncIterator()
+        if partialWord { engine.performSeek(to: 0.4) }
+        else { engine.performSeek(toCharIndex: 6) }
+        _ = try #require(await events.next())
+        let seek = engine.currentSeekTask
+        fixture.gate.finish(0)
+        await seek?.value
+        let item = try #require(engine.queuePlayer?.currentItem)
+        let chunk = try #require(engine.chunks.first)
+        engine.coordinator.requestPlayIntent()
+        engine.setActualPlayback(true)
+        engine.observeDeliveredKokoroWords(in: chunk, item: item, time: 0.6)
+        #expect(engine.listeningAccumulator.words == (partialWord ? 0 : 1))
+        now = 1
+        engine.setActualPlayback(false)
+        engine.setActualPlayback(true) // Ordinary pause/resume retains the item cursor.
+        now = 2
+        engine.generationEOF = true
+        engine.handlePlaybackItemEnded(item)
+        let rows = try fixture.container.mainContext.fetch(FetchDescriptor<ListeningSession>())
+        let expected = partialWord ? 1 : 2
+        #expect(rows.reduce(0) { $0 + $1.wordsListened } == expected)
+        #expect(ListeningMetrics.wpm(words: expected, seconds: rows.reduce(0) { $0 + $1.secondsListened }) == Double(expected) * 30)
+
+        // A backward seek replays words; the discarded item's late end cannot count again.
+        engine.performSeek(toCharIndex: 0)
+        _ = try #require(await events.next())
+        let replaySeek = engine.currentSeekTask
+        fixture.gate.finish(1)
+        await replaySeek?.value
+        let replayItem = try #require(engine.queuePlayer?.currentItem)
+        engine.coordinator.requestPlayIntent()
+        engine.setActualPlayback(true)
+        engine.observeDeliveredKokoroWords(in: chunk, item: replayItem, time: 0.6)
+        engine.handlePlaybackItemEnded(item)
+        #expect(engine.listeningAccumulator.words == 2)
+        now = 3
+        engine.setActualPlayback(false)
+        let replayRows = try fixture.container.mainContext.fetch(FetchDescriptor<ListeningSession>())
+        #expect(replayRows.reduce(0) { $0 + $1.wordsListened } == expected + 2)
     }
 
     @Test func failedSeekDoesNotResumeOrLeavePendingPlayback() async throws {

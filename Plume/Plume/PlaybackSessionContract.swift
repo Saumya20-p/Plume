@@ -83,7 +83,7 @@ extension UTF16TextRange {
     /// Creates a range only after checking negative values, addition overflow,
     /// and the document's UTF-16 length.  Never use `upperBound` on untrusted
     /// callback input before this validation.
-    static func validated(
+    nonisolated static func validated(
         location: Int,
         length: Int,
         withinUTF16Length sourceLength: Int
@@ -614,6 +614,7 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
               cursors.commit(to: cursor)
         else { return false }
         didCompleteLogicalDocument = true
+        desiredPlayIntent = .paused
         lifecycle = .completed
         actualActivity = .idle
         hasValidBufferedAudio = false
@@ -639,6 +640,7 @@ nonisolated struct PlaybackSessionContract: Equatable, Sendable {
               cursors.commit(to: cursor)
         else { return false }
         didCompleteLogicalDocument = true
+        desiredPlayIntent = .paused
         lifecycle = .completed
         actualActivity = .idle
         hasValidBufferedAudio = false

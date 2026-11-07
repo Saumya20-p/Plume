@@ -5,9 +5,10 @@ extension AudioPlaybackEngine {
     struct AudioPreferencesSnapshot: Equatable {
         let speed: Double
         let voice: VoicePreferences
+        let automaticFallback: Bool
         static func current() -> Self {
             Self(speed: UserDefaults.standard.double(forKey: "defaultPlaybackSpeed"),
-                 voice: VoicePreferencesStore().load())
+                 voice: VoicePreferencesStore().load(), automaticFallback: PlaybackPreferences.automaticFallback)
         }
     }
 
@@ -20,27 +21,32 @@ extension AudioPlaybackEngine {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.updateEffectivePlaybackRate()
-                self.coordinator.updateVoicePreferences(VoicePreferencesStore().load())
+                self.reconcileFallbackPreference() // Voice choices remain snapshotted for this run.
             }
         }
     }
 
     func prepareReaderAudioSession(reason: String) {
-        guard let documentID = currentDocument?.id else { return }
+        guard !systemInterruptionActive, let documentID = currentDocument?.id else { return }
         let sessionID = coordinator.contract?.sessionID
         let seekRevision = self.seekRevision
+        let interruptionRevision = self.interruptionRevision
         let requestID = UUID()
         audioPreparationID = requestID
-        AppAudioSession.shared.prepare(owner: audioSessionOwner, reason: reason) { [weak self] result in
+        prepareAudioSession { [weak self] result in
             guard let self, self.audioPreparationID == requestID,
                   self.currentDocument?.id == documentID,
-                  self.coordinator.contract?.sessionID == sessionID else { return }
+                  self.coordinator.contract?.sessionID == sessionID,
+                  self.seekRevision == seekRevision,
+                  self.interruptionRevision == interruptionRevision,
+                  !self.systemInterruptionActive else { return }
             self.audioPreparationID = nil
             switch result {
             case .failure(let error):
                 guard !(error is CancellationError) else { return }
                 self.pause()
                 self.coordinator.reportAudioSessionFailure(error)
+                self.generationManager.reportPlaybackFailure(error, engine: self, stage: "audio session preparation")
             case .success:
                 if !self.hasPrewarmedSpeech && !self.isPlaying {
                     self.hasPrewarmedSpeech = true
@@ -49,14 +55,13 @@ extension AudioPlaybackEngine {
                     utterance.volume = 0
                     self.prewarmSynthesizer.speak(utterance)
                 }
-                guard self.seekRevision == seekRevision else { return }
                 self.startPreparedPlayback()
             }
         }
     }
 
     func startPreparedPlayback() {
-        guard AppAudioSession.shared.isReady(owner: audioSessionOwner), pendingSeek == nil,
+        guard !systemInterruptionActive, isAudioReady, pendingSeek == nil,
               isPlaying, coordinator.desiredPlayIntent == .playing else { return }
         guard coordinator.play() else { isPlaying = false; return }
         if !coordinator.isAppleActive {
@@ -64,13 +69,13 @@ extension AudioPlaybackEngine {
             queuePlayer?.play()
             queuePlayer?.rate = playbackRate
         }
-        wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
+        sampleActualPlayback()
         updateNowPlayingPlaybackInfo()
     }
 
     func resumeQueuedPlayback() {
-        guard isPlaying, pendingSeek == nil, !coordinator.isAppleActive else { return }
-        guard AppAudioSession.shared.isReady(owner: audioSessionOwner) else {
+        guard !systemInterruptionActive, isPlaying, pendingSeek == nil, !coordinator.isAppleActive else { return }
+        guard isAudioReady else {
             if audioPreparationID == nil { prepareReaderAudioSession(reason: "queue-resume") }
             return
         }

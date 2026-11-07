@@ -9,6 +9,9 @@ import AVFoundation
 @MainActor
 enum UIExperimentFixture {
     static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--ui-experiment-fixture") }
+    static var emptyLibrary: Bool {
+        enabled && ProcessInfo.processInfo.arguments.contains("--ui-experiment-empty-library")
+    }
     static var autoHideEnabled: Bool {
         enabled && ProcessInfo.processInfo.arguments.contains("--ui-experiment-auto-hide")
     }
@@ -68,7 +71,22 @@ enum UIExperimentFixture {
         if arguments.contains("--ui-experiment-auto-hide-on") { appearance.autoHideReaderControls = true }
         if let index = arguments.firstIndex(of: "-appearance.selectedTheme"), arguments.indices.contains(index + 1),
            let theme = ReadingTheme(rawValue: arguments[index + 1]) { appearance.selectedTheme = theme }
+        if emptyLibrary { return }
         let context = container.mainContext
+        if arguments.contains("--ui-experiment-startup-library") || arguments.contains("--ui-experiment-folder-only") {
+            let count = arguments.contains("--ui-experiment-folder-only") ? 0 :
+                (arguments.contains("--ui-experiment-large-library") ? 1000 : 100)
+            let folders = (1...5).map { Folder(name: "Startup Folder \($0)") }
+            for folder in folders { context.insert(folder) }
+            for index in 0..<count {
+                let text = String(repeating: "A synthetic passage for launch verification. ", count: 100)
+                let document = Document(title: "Startup Chapter \(index + 1)", bodyText: text, wordCount: 700)
+                document.folder = folders[index % folders.count]
+                context.insert(document)
+            }
+            try? context.save()
+            return
+        }
         let folder = Folder(name: "Experiment Book")
         context.insert(folder)
         let passage = "The river moved slowly beneath the old bridge. Morning light touched the water and the quiet windows of the town. She paused to listen, then opened the book and began to read."
@@ -119,9 +137,17 @@ enum UIExperimentFixture {
 }
 struct UIExperimentEnvironment: ViewModifier {
     func body(content: Content) -> some View {
-        if UIExperimentFixture.enabled && ProcessInfo.processInfo.arguments.contains("--ui-experiment-large-text") {
-            content.environment(\.dynamicTypeSize, .accessibility5).environment(\.legibilityWeight, .bold)
-        } else { content }
+        content
+            .transformEnvironment(\.dynamicTypeSize) { size in
+                if UIExperimentFixture.enabled && ProcessInfo.processInfo.arguments.contains("--ui-experiment-large-text") {
+                    size = .accessibility5
+                }
+            }
+            .transformEnvironment(\.legibilityWeight) { weight in
+                if UIExperimentFixture.enabled && ProcessInfo.processInfo.arguments.contains("--ui-experiment-large-text") {
+                    weight = .bold
+                }
+            }
     }
 }
 #endif

@@ -27,6 +27,8 @@ extension AVSpeechSynthesizer: SpeechSynthesizing {
 nonisolated private struct AppleSpeechEvent: Sendable {
     nonisolated enum Kind: Sendable {
         case didStart
+        case didPause
+        case didContinue
         case willSpeak(UTF16TextRange)
         case didFinish
         case didCancel
@@ -35,7 +37,7 @@ nonisolated private struct AppleSpeechEvent: Sendable {
             switch self {
             case .didFinish, .didCancel:
                 true
-            case .didStart, .willSpeak:
+            case .didStart, .didPause, .didContinue, .willSpeak:
                 false
             }
         }
@@ -146,7 +148,7 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
 
     var producerType: PlaybackProducer { .apple }
 
-    private let synthesizer: any SpeechSynthesizing
+    private var synthesizer: any SpeechSynthesizing
     private let eventBridge: AppleSpeechEventBridge
     private var eventConsumer: Task<Void, Never>?
     private var streamContinuations: [UUID: AsyncStream<AudioProducerEvent>.Continuation] = [:]
@@ -161,6 +163,7 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
     private var activeRequestID: UUID?
 
     weak var delegate: (any AudioProducerDelegate)?
+    var onActivityChanged: ((PlaybackCallbackIdentity, Bool) -> Void)?
     var onDidStart: ((PlaybackCallbackIdentity) -> Void)?
     var onWillSpeak: ((PlaybackCallbackIdentity, UTF16TextRange) -> Void)?
     var onDidFinish: ((PlaybackCallbackIdentity) -> Void)?
@@ -282,6 +285,14 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
 
     func seek(to cursor: PlaybackSourceCursor) {
         invalidatePlaybackState()
+    }
+
+    func rebuildAfterMediaReset() {
+        invalidatePlaybackState()
+        guard managesAudioSession else { return }
+        synthesizer = AVSpeechSynthesizer()
+        synthesizer.delegate = self
+        synthesizer.usesApplicationAudioSession = true
     }
 
     func reset() {
@@ -407,6 +418,12 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
         switch event.kind {
         case .didStart:
             handleDidStart(event.requestID)
+        case .didPause, .didContinue:
+            if let request = requests[event.requestID] {
+                let active: Bool
+                if case .didContinue = event.kind { active = true } else { active = false }
+                onActivityChanged?(request.request.callback, active)
+            }
         case .willSpeak(let localRange):
             handleWillSpeak(event.requestID, localRange: localRange)
         case .didFinish:
@@ -452,8 +469,9 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
             return
         }
         inFlightUtteranceCount = max(0, inFlightUtteranceCount - 1)
-        pumpQueue()
+        let generation = generationID
         onDidFinish?(registered.request.callback)
+        if generationID == generation { pumpQueue() }
         delegate?.producerDidFinish(self, callback: registered.request.callback)
         yieldProducerEvent(.didFinish(registered.request.callback))
     }
@@ -464,7 +482,6 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
             return
         }
         inFlightUtteranceCount = max(0, inFlightUtteranceCount - 1)
-        pumpQueue()
         onDidCancel?(registered.request.callback)
         delegate?.producerDidCancel(self, callback: registered.request.callback)
         yieldProducerEvent(.didCancel(registered.request.callback))
@@ -478,6 +495,13 @@ final class AppleSpeechProducer: NSObject, AVSpeechSynthesizerDelegate, AudioPro
         }
     }
     #endif
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {
+        eventBridge.yield(.didPause, for: ObjectIdentifier(utterance))
+    }
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
+        eventBridge.yield(.didContinue, for: ObjectIdentifier(utterance))
+    }
 
     // MARK: - AVSpeechSynthesizerDelegate
 

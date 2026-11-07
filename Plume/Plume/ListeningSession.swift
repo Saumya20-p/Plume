@@ -9,6 +9,7 @@ public final class ListeningSession {
     public var secondsListened: Double
     public var wordsListened: Int
     public var playbackSpeed: Double
+    public var measurementVersion: Int? = nil
     
     public init(
         id: UUID = UUID(),
@@ -16,7 +17,8 @@ public final class ListeningSession {
         date: Date = Date(),
         secondsListened: Double,
         wordsListened: Int,
-        playbackSpeed: Double
+        playbackSpeed: Double,
+        measurementVersion: Int? = nil
     ) {
         self.id = id
         self.documentId = documentId
@@ -24,5 +26,6 @@ public final class ListeningSession {
         self.secondsListened = secondsListened
         self.wordsListened = wordsListened
         self.playbackSpeed = playbackSpeed
+        self.measurementVersion = measurementVersion
     }
 }

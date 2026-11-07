@@ -1,9 +1,11 @@
+import Combine
 import Foundation
 import AVFoundation
 import UIKit
 import os
 
 extension AudioPlaybackEngine {
+    enum DeferredSeekTarget { case time(TimeInterval), character(Int) }
     struct PendingSeek {
         enum Phase { case debouncing, generating, positioning }
         let revision: Int
@@ -18,17 +20,29 @@ extension AudioPlaybackEngine {
     func beginSeek(playAfterSeek: Bool = false, characterOffset: Int? = nil) -> PendingSeek? {
         let shouldPlay = playAfterSeek || pendingSeek?.shouldPlay == true || coordinator.desiredPlayIntent == .playing
         cancelPendingSeek()
+        audioPreparationID = nil
+        recoverySeekOffset = nil
+        deferredSeekTarget = nil
+        fallbackTransitionID = nil
+        setActualPlayback(false)
+        generationFailed = false
+        generationManager.clearIssue()
         cancelSpeculativeHandback()
         guard let document = currentDocument else { return nil }
         let request = PendingSeek(revision: seekRevision, documentID: document.id,
                                   shouldPlay: shouldPlay, characterOffset: characterOffset)
         pendingSeek = request
+        deliveredWords.removeAll()
         recordListeningSession()
         saveDocumentProgress()
         queuePlayer?.pause()
         // Stop Apple speech before the debounce; do not restart its old cursor.
-        if coordinator.isAppleActive { coordinator.pause() }
+        if coordinator.isAppleActive && !systemInterruptionActive { coordinator.pause() }
         isPlaying = shouldPlay
+        if systemInterruptionActive && shouldPlay {
+            coordinator.requestPlayIntent()
+            wasPlayingBeforeInterruption = true
+        }
         currentWord = nil
         traceSeek("requested")
         return request
@@ -42,9 +56,12 @@ extension AudioPlaybackEngine {
     func performSeek(to targetTime: TimeInterval, request: PendingSeek? = nil) {
         guard targetTime.isFinite, let request = request ?? beginSeek(),
               isCurrentSeek(request), let doc = currentDocument else { return }
-        let total = PlaybackSeekBounds.duration(completed: doc.audioFileURL != nil && !coordinator.isAppleActive,
+        reactivateCompletedRun(at: 0)
+        let total = PlaybackSeekBounds.duration(completed: exactTotalDuration != nil,
                                                 generated: duration, estimated: doc.estimatedDuration)
         let target = max(0, min(targetTime, total))
+        deferredSeekTarget = .time(target)
+        if systemInterruptionActive { return }
         if coordinator.isAppleActive {
             coordinator.seek(to: target)
             completeAppleSeek(request)
@@ -65,9 +82,12 @@ extension AudioPlaybackEngine {
     func performSeek(toCharIndex charIndex: Int, request: PendingSeek? = nil) {
         guard let request = request ?? beginSeek(characterOffset: charIndex),
               isCurrentSeek(request), let doc = currentDocument else { return }
-        let offset = min(max(0, charIndex), max(0, doc.bodyText.utf16.count - 1))
+        reactivateCompletedRun(at: charIndex)
+        let offset = min(max(0, charIndex), doc.bodyText.utf16.count)
         pendingSeek?.characterOffset = offset
+        deferredSeekTarget = .character(offset)
         coordinator.syncCursor(toUTF16Offset: offset)
+        if systemInterruptionActive { return }
         if coordinator.isAppleActive {
             coordinator.seek(toUTF16Offset: offset)
             completeAppleSeek(request)
@@ -103,6 +123,7 @@ extension AudioPlaybackEngine {
         currentTime = coordinator.estimatedCurrentTime
         traceSeek("positioned-apple")
         pendingSeek = nil
+        deferredSeekTarget = nil
         if shouldPlay {
             play()
             if UIApplication.shared.applicationState != .background, let doc = currentDocument {
@@ -116,16 +137,17 @@ extension AudioPlaybackEngine {
         guard isCurrentSeek(request), let doc = currentDocument else { return }
         pendingSeek?.phase = .generating
         traceSeek("cancel-generation")
-        AudioGenerationManager.shared.cancelCurrentGeneration(preservingPlaybackIntent: true)
+        generationManager.cancelCurrentGeneration(preservingPlaybackIntent: true)
         removeQueuedItems()
         chunks.removeAll()
         virtualBaseOffset = estimatedTime
         currentTime = estimatedTime
         duration = estimatedTime
         isRecoveringFromUnderrun = false
+        generationEOF = false
         if pendingSeek?.shouldPlay == true { _ = coordinator.play() }
         traceSeek("generate", destination: Double(segmentIndex))
-        AudioGenerationManager.shared.generate(document: doc, playbackEngine: self,
+        generationManager.generate(document: doc, playbackEngine: self,
                                                 startChunkIndex: segmentIndex, preservingPlaybackSession: true)
         updateNowPlayingPlaybackInfo()
     }
@@ -147,7 +169,11 @@ extension AudioPlaybackEngine {
         removeQueuedItems()
         for chunk in chunks[chunkIndex...] { insertQueuedItem(AVPlayerItem(url: chunk.url)) }
         guard let item = player.currentItem else { failSeek(request); return }
+        listeningItems[ObjectIdentifier(item)] = KokoroListeningTraversal(start: localTime)
         let target = chunks[chunkIndex].globalStartTime + localTime
+        if let offset = request.characterOffset ?? chunks[chunkIndex].timestamps.last(where: { $0.startTime <= localTime })?.rangeLocation {
+            coordinator.syncCursor(toUTF16Offset: offset)
+        }
         currentTime = target
         traceSeek("positioning", destination: target, item: item)
         let operation = seekItemOperation
@@ -160,8 +186,10 @@ extension AudioPlaybackEngine {
             self.traceSeek("positioned", destination: target)
             let shouldPlay = self.pendingSeek?.shouldPlay == true
             self.pendingSeek = nil
+            self.deferredSeekTarget = nil
             self.currentSeekTask = nil
             self.currentTime = target
+            self.saveDocumentProgress()
             if shouldPlay { self.play() }
             else { self.isPlaying = false }
             self.updateNowPlayingPlaybackInfo()
@@ -188,18 +216,45 @@ extension AudioPlaybackEngine {
         guard isCurrentSeek(request) else { return }
         traceSeek("failed")
         pendingSeek = nil
+        deferredSeekTarget = nil
         currentSeekTask = nil
         pause()
     }
 
     func insertQueuedItem(_ item: AVPlayerItem) {
-        activeQueueItems.insert(ObjectIdentifier(item))
+        let id = ObjectIdentifier(item)
+        activeQueueItems.insert(id)
+        listeningItems[id] = KokoroListeningTraversal()
         queuePlayer?.insert(item, after: nil)
+        itemStatusSubscriptions[id] = item.publisher(for: \.status).sink { [weak self, weak item] status in
+            guard status == .failed else { return }
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item, self.activeQueueItems.contains(ObjectIdentifier(item)),
+                      self.coordinator.desiredPlayIntent == .playing, !self.coordinator.isAppleActive,
+                      self.pendingSeek == nil else { return }
+                self.handlePlaybackItemFailure(item, error: item.error)
+            }
+        }
     }
 
     func removeQueuedItems() {
         activeQueueItems.removeAll()
+        queueItemFailures.removeAll()
+        listeningItems.removeAll()
+        itemStatusSubscriptions.removeAll()
         queuePlayer?.removeAllItems()
+    }
+
+    func resumeDeferredSeek(shouldPlay: Bool) {
+        guard let target = deferredSeekTarget, let request = pendingSeek else { return }
+        seekDebounceTimer?.invalidate()
+        seekDebounceTimer = nil
+        deferredSeekTarget = nil
+        pendingSeek?.shouldPlay = shouldPlay
+        switch target {
+        case .time(let time): performSeek(to: time, request: request)
+        case .character(let offset): performSeek(toCharIndex: offset, request: request)
+        }
     }
 
     func traceSeek(_ event: String, destination: Double? = nil, item: AVPlayerItem? = nil) {

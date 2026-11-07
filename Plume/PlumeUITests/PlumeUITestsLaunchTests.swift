@@ -28,7 +28,7 @@ final class PlumeUITestsLaunchTests: XCTestCase {
         // https://developer.apple.com/documentation/xcuiautomation
 
         let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = "Launch Screen"
+        attachment.name = "Initial App Screen"
         attachment.lifetime = .keepAlways
         add(attachment)
     }

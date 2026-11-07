@@ -20,10 +20,10 @@ final class PlaybackSeekLifecycleTests: XCTestCase {
         XCTAssertFalse(engine.coordinator.isAppleActive)
         XCTAssertTrue(engine.generationGate.isActive(sessionID: session.id))
         engine.coordinator.play()
-        engine.finishGeneration(sessionID: session.id, preservingPlaybackIntent: true)
+        engine.finishGeneration(sessionID: session.id, termination: .retired)
         XCTAssertEqual(engine.coordinator.desiredPlayIntent, .playing)
         engine.beginGenerationSession(session)
-        engine.finishGeneration(sessionID: session.id)
+        engine.finishGeneration(sessionID: session.id, termination: .cancelled)
         XCTAssertEqual(engine.coordinator.desiredPlayIntent, .paused)
     }
     @MainActor func testPendingFallbackCannotRestartReleasedChapter() async throws {

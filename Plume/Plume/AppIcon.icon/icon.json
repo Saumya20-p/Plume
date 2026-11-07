@@ -1,0 +1,159 @@
+{
+  "features": [
+    "specular-location"
+  ],
+  "fill-specializations": [
+    {
+      "value": {
+        "solid": "extended-srgb:0.94510,0.92549,0.90196,1.00000"
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "solid": "extended-srgb:0.10196,0.07451,0.06667,1.00000"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "layers": [
+        {
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "extended-srgb:0.72157,0.20392,0.29020,1.00000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "extended-srgb:0.72157,0.20392,0.29020,1.00000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "extended-srgb:0.80000,0.80000,0.80000,1.00000"
+              }
+            }
+          ],
+          "image-name": "plume-layer-4-wave.svg",
+          "name": "plume-layer-4-wave"
+        }
+      ],
+      "lighting": "combined",
+      "name": "Wave",
+      "position": {
+        "scale": 0.94,
+        "translation-in-points": [
+          0,
+          0
+        ]
+      },
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.08
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.08
+      }
+    },
+    {
+      "layers": [
+        {
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "extended-srgb:0.72157,0.20392,0.29020,1.00000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "extended-srgb:0.72157,0.20392,0.29020,1.00000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "extended-srgb:0.80000,0.80000,0.80000,1.00000"
+              }
+            }
+          ],
+          "image-name": "plume-layer-3-holder.svg",
+          "name": "plume-layer-3-holder"
+        },
+        {
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "extended-srgb:0.20784,0.16078,0.13725,1.00000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "extended-srgb:0.95686,0.91373,0.86275,1.00000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "extended-srgb:1.00000,1.00000,1.00000,1.00000"
+              }
+            }
+          ],
+          "image-name": "plume-layer-2-quill-tip.svg",
+          "name": "plume-layer-2-quill-tip",
+          "opacity": 0.7
+        },
+        {
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "extended-srgb:0.20784,0.16078,0.13725,1.00000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "extended-srgb:0.95686,0.91373,0.86275,1.00000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "extended-srgb:1.00000,1.00000,1.00000,1.00000"
+              }
+            }
+          ],
+          "image-name": "plume-layer-1-quill.svg",
+          "name": "plume-layer-1-quill"
+        }
+      ],
+      "lighting": "combined",
+      "name": "Pen",
+      "position": {
+        "scale": 0.94,
+        "translation-in-points": [
+          0,
+          0
+        ]
+      },
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.28
+      },
+      "specular": "inside",
+      "translucency": {
+        "enabled": true,
+        "value": 0.18
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

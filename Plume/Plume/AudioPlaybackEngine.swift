@@ -43,15 +43,40 @@ public class PlaybackProgress: ObservableObject {
     @Published public var currentTime: TimeInterval = 0
     @Published public var currentWord: WordTimestamp? = nil
     
-    private init() {}
+    init() {}
 }
 
 @MainActor
 public class AudioPlaybackEngine: ObservableObject {
     public static let shared = AudioPlaybackEngine()
-    public let progress = PlaybackProgress.shared
-    
-    let coordinator = PlaybackRoutingCoordinator()
+    public let progress: PlaybackProgress
+
+    let coordinator: PlaybackRoutingCoordinator
+    private let managerOverride: AudioGenerationManager?
+    var generationManager: AudioGenerationManager { managerOverride ?? .shared }
+    var applicationPhase: PlaybackAppPhase = .active
+    var lifecycleObservation: AnyCancellable?
+    var generationEOF = false
+    @Published var generationFailed = false
+    var completedRunID: UUID?
+    var recoveryBudget = PlaybackRecoveryBudget()
+    var automaticFallbackOverride: (() -> Bool)?
+    var allowsAutomaticFallback: Bool { automaticFallbackOverride?() ?? PlaybackPreferences.automaticFallback }
+    var lastActualSample: TimeInterval?
+    var itemFailureObserverToken: Any?
+    var itemStatusSubscriptions: [ObjectIdentifier: AnyCancellable] = [:]
+    var fallbackTransitionID: UUID?
+    var advanceQueue: () -> Void = { PlaybackCoordinator.shared.advanceNext() }
+    var audioReadyOverride: (() -> Bool)?
+    var prepareAudioOverride: ((@escaping (Result<Void, Error>) -> Void) -> Void)?
+    var listeningAccumulator = ListeningAccumulator()
+    var listeningWordRanges: [UTF16TextRange] = []
+    var deliveredWords: Set<Int> = []
+    var listeningItems: [ObjectIdentifier: KokoroListeningTraversal] = [:]
+    var listeningClock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    @Published var isWaitingForForeground = false
+    @Published var actualPlaybackActive = false
+    var isAudioReady: Bool { audioReadyOverride?() ?? AppAudioSession.shared.isReady(owner: audioSessionOwner) }
     
     public var isAppleActive: Bool {
         coordinator.isAppleActive
@@ -64,8 +89,13 @@ public class AudioPlaybackEngine: ObservableObject {
     let prewarmSynthesizer = AVSpeechSynthesizer()
     var queuePlayer: AVQueuePlayer?
     var playerTimeControlCancellable: AnyCancellable?
+    var playerCurrentItemCancellable: AnyCancellable?
     let audioSessionOwner = UUID()
     var audioPreparationID: UUID?
+    var interruptionRevision = 0
+    var systemInterruptionActive = false
+    var recoverySeekOffset: Int?
+    var deferredSeekTarget: DeferredSeekTarget?
     var hasPrewarmedSpeech = false
     var audioPreferencesSnapshot: AudioPreferencesSnapshot?
     
@@ -88,8 +118,9 @@ public class AudioPlaybackEngine: ObservableObject {
     var lastProgressSaveTime: TimeInterval = 0
     var wallClockSessionStartTime: TimeInterval?
     var currentSeekTask: Task<Void, Never>? = nil
-    var pendingSeek: PendingSeek?
+    @Published var pendingSeek: PendingSeek?
     var activeQueueItems: Set<ObjectIdentifier> = []
+    var queueItemFailures: [ObjectIdentifier: Error] = [:]
     // Injectable completion boundary lets lifecycle tests hold a real seek in flight.
     var seekItemOperation: @MainActor (AVPlayerItem, CMTime) async -> Bool = { item, time in
         await AudioPlaybackEngine.seekReadyItem(item, to: time)
@@ -143,16 +174,16 @@ public class AudioPlaybackEngine: ObservableObject {
     @Published var currentDocument: Document?
     @Published var isPlayerViewPresented: Bool = false
     @Published public var presentedPlayerDocument: Document? = nil
-    public var isGenerationActive: Bool = false
+    @Published public var isGenerationActive: Bool = false
     var isRecoveringFromUnderrun: Bool = false
     
-    func finishGeneration(sessionID: UUID, preservingPlaybackIntent: Bool = false) {
+    func finishGeneration(sessionID: UUID, termination: GenerationTermination) {
         guard generationGate.isActive(sessionID: sessionID) else {
             return
         }
 
         isGenerationActive = false
-        if chunks.isEmpty && !coordinator.isAppleActive && !preservingPlaybackIntent {
+        if chunks.isEmpty && !coordinator.isAppleActive && (termination == .failed || termination == .cancelled) {
             if let request = pendingSeek {
                 if request.phase == .generating { failSeek(request) }
             } else { pause() }
@@ -165,7 +196,13 @@ public class AudioPlaybackEngine: ObservableObject {
         evaluateAudioSession()
     }
     
-    private init() {
+    init(observeSystem: Bool = true, manager: AudioGenerationManager? = nil,
+         routing: PlaybackRoutingCoordinator? = nil) {
+        let trace = StabilityTrace.begin("StartupPlaybackEngine")
+        defer { StabilityTrace.end("StartupPlaybackEngine", trace) }
+        self.progress = observeSystem ? .shared : PlaybackProgress()
+        self.coordinator = routing ?? PlaybackRoutingCoordinator()
+        self.managerOverride = manager
         let savedSpeed = UserDefaults.standard.double(forKey: "defaultPlaybackSpeed")
         self.basePlaybackSpeed = savedSpeed == 0 ? 1.0 : Float(savedSpeed)
         self.playbackRate = self.basePlaybackSpeed
@@ -175,19 +212,24 @@ public class AudioPlaybackEngine: ObservableObject {
         setupPlayerObservers()
         
         coordinator.playbackEngine = self
-        setupRemoteCommandCenter()
-        setupAudioSessionObservers()
+        if observeSystem {
+            applicationPhase = PlaybackLifecycle.shared.phase
+            lifecycleObservation = PlaybackLifecycle.shared.$phase.dropFirst().sink { [weak self] in self?.handleLifecycle($0) }
+            setupRemoteCommandCenter()
+            setupAudioSessionObservers()
+        } else { advanceQueue = {} }
         setupCoordinatorCallbacks()
         
         audioPreferencesSnapshot = AudioPreferencesSnapshot.current()
-        userDefaultsObserverToken = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+        if observeSystem { userDefaultsObserverToken = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.handleAudioPreferencesChange() }
-        }
+        } }
 
     }
 
     deinit {
         playerTimeControlCancellable?.cancel()
+        if let token = itemFailureObserverToken { NotificationCenter.default.removeObserver(token) }
         if let token = endObserverToken {
             NotificationCenter.default.removeObserver(token)
         }
@@ -220,39 +262,19 @@ public class AudioPlaybackEngine: ObservableObject {
             self.currentTime = time
             self.currentWord = word
                 
-            if let doc = self.currentDocument, let context = doc.modelContext {
-                if self.duration > 0 && abs(self.currentTime - self.lastProgressSaveTime) > 5.0 {
-                    if doc.progress < 1.0 {
-                        doc.progress = self.currentTime / self.duration
-                    }
-                    doc.lastReadCharIndex = word?.rangeLocation ?? doc.lastReadCharIndex
-                    self.lastProgressSaveTime = self.currentTime
-                    try? context.save()
-                }
-            }
+            self.saveDocumentProgressIfNeeded()
             self.updateNowPlayingPlaybackInfo()
         }
 
-        coordinator.onCompleted = { [weak self] in
-            guard let self, self.pendingSeek == nil else { return }
-            let completedDuration = self.duration > 0 ? self.duration : (self.currentDocument?.estimatedDuration ?? self.currentTime)
-            self.currentTime = completedDuration
-            if let doc = self.currentDocument {
-                doc.progress = 1.0
-                doc.lastReadCharIndex = doc.bodyText.utf16.count
-                if let context = doc.modelContext {
-                    try? context.save()
-                }
-            }
-            self.pause()
-            let revision = self.seekRevision
-            let documentID = self.currentDocument?.id
-            Task { @MainActor [weak self] in
-                guard let self, self.pendingSeek == nil, self.seekRevision == revision,
-                      self.currentDocument?.id == documentID else { return }
-                PlaybackCoordinator.shared.advanceNext()
-            }
+        coordinator.onActualPlayingChanged = { [weak self] active in
+            guard let self, self.coordinator.isAppleActive else { return }
+            self.isPlaying = self.coordinator.desiredPlayIntent == .playing
+            self.setActualPlayback(active)
+            self.updateNowPlayingPlaybackInfo()
         }
+        coordinator.onWaitingForPrimary = { [weak self] in self?.waitForSafeGeneration() }
+        coordinator.onSpokenWordCompleted = { [weak self] range in self?.countDeliveredWords(range) }
+        coordinator.onCompleted = { [weak self] in self?.completeLogicalPlayback() }
 
         coordinator.onPerformHandback = { [weak self] chunks, _ in
             guard let self, self.pendingSeek == nil else { return }
@@ -264,6 +286,7 @@ public class AudioPlaybackEngine: ObservableObject {
     public func updateEffectivePlaybackRate() {
         let newRate = min(3.0, basePlaybackSpeed)
         if abs(playbackRate - newRate) > 0.01 {
+            recordListeningSession()
             playbackRate = newRate
             if coordinator.isAppleActive {
                 coordinator.setSpeechRateMultiplier(newRate)
@@ -288,25 +311,20 @@ public class AudioPlaybackEngine: ObservableObject {
         let newItem = AVPlayerItem(url: chunk.fileURL)
         insertQueuedItem(newItem)
         
-        duration += exactDuration
+        duration = globalStart + exactDuration
         if pendingSeek != nil {
             positionGeneratedSeekIfNeeded()
             updateNowPlayingPlaybackInfo()
             return true
         }
-        if isPlaying {
+        if coordinator.desiredPlayIntent == .playing {
+            isPlaying = true
             if queuePlayer?.timeControlStatus != .playing {
                 isRecoveringFromUnderrun = true
             }
             
-            if isRecoveringFromUnderrun {
-                if (queuePlayer?.items().count ?? 0) >= 2 {
-                    isRecoveringFromUnderrun = false
-                    resumeQueuedPlayback()
-                }
-            } else {
-                resumeQueuedPlayback()
-            }
+            isRecoveringFromUnderrun = false
+            resumeQueuedPlayback()
         }
         
         updateNowPlayingPlaybackInfo()
@@ -319,19 +337,30 @@ public class AudioPlaybackEngine: ObservableObject {
 
     func beginGenerationSession(_ session: PlaybackGenerationSession) {
         generationGate.activate(session)
+        generationFailed = false
         isGenerationActive = true
     }
 
     func load(document: Document, generationSession: PlaybackGenerationSession?) {
+        setActualPlayback(false)
+        recordListeningSession()
+        isPlaying = false
+        if currentDocument?.id != document.id { generationManager.cancelCurrentGeneration(preservingPlaybackIntent: true) }
         cancelPendingSeek()
         cancelSpeculativeHandback()
+        generationManager.clearIssue()
+        generationEOF = false; generationFailed = false; completedRunID = nil
+        isWaitingForForeground = false; fallbackTransitionID = nil
+        recoveryBudget = PlaybackRecoveryBudget()
         if let generationSession {
             generationGate.activate(generationSession)
         } else {
             generationGate.invalidate()
         }
-        isGenerationActive = true
+        isGenerationActive = generationSession != nil
         audioPreparationID = nil
+        recoverySeekOffset = nil
+        deferredSeekTarget = nil
         removeTimeObserver()
         removeEndObserver()
         
@@ -351,7 +380,8 @@ public class AudioPlaybackEngine: ObservableObject {
         currentWord = nil
         
         self.currentDocument = document
-        
+        resetWordAccounting(document.bodyText)
+        lastProgressSaveTime = -10
         // Initialize coordinator session
         let preferences = VoicePreferencesStore().load()
         let snapshot = PlaybackSessionSnapshot(documentID: document.id, preferences: preferences)
@@ -362,6 +392,20 @@ public class AudioPlaybackEngine: ObservableObject {
             resumeCursor: resumeCursor,
             speechRateMultiplier: playbackRate
         )
+
+        if document.readingProgress == 1, !document.bodyText.isEmpty, generationSession == nil {
+            _ = coordinator.completeAtEOF()
+            isGenerationActive = false
+            currentTime = document.estimatedDuration
+            setupNowPlaying()
+            evaluateAudioSession()
+            return
+        }
+        if systemInterruptionActive {
+            _ = coordinator.beginInterruption()
+            setupNowPlaying()
+            return
+        }
         
         if coordinator.isAppleActive {
             self.duration = document.estimatedDuration
@@ -372,7 +416,10 @@ public class AudioPlaybackEngine: ObservableObject {
             return
         }
         
-        if let legacyURL = document.audioFileURL {
+        // Legacy whole-document files lack voice metadata; preserve them on disk
+        // but do not silently substitute them for the selected voice.
+        if let legacyURL = document.audioFileURL,
+           UserDefaults.standard.string(forKey: "audioCache.voice.\(document.id)") == preferences.primary.identifier {
             let duration = (try? AVAudioPlayer(contentsOf: legacyURL).duration) ?? document.estimatedDuration
             let chunk = PlayedChunk(
                 legacyDocumentID: document.id,
@@ -383,6 +430,7 @@ public class AudioPlaybackEngine: ObservableObject {
             )
             self.chunks.append(chunk)
             self.duration = duration
+            self.generationEOF = true
             self.insertQueuedItem(AVPlayerItem(url: legacyURL))
         }
         
@@ -391,21 +439,35 @@ public class AudioPlaybackEngine: ObservableObject {
     }
 
     public func play() {
-        guard currentDocument != nil else { return }
+        guard let document = currentDocument else { return }
+        if coordinator.contract?.lifecycle == .completed {
+            document.lastReadCharIndex = 0
+            document.progress = 0
+            reactivateCompletedRun(at: 0)
+        }
         pendingSeek?.shouldPlay = true
         coordinator.requestPlayIntent()
         isPlaying = true
-        traceSeek("play-intent")
-        updateNowPlayingPlaybackInfo()
-        if AppAudioSession.shared.isReady(owner: audioSessionOwner) {
-            startPreparedPlayback()
-        } else {
-            prepareReaderAudioSession(reason: "play")
+        generationFailed = false
+        generationManager.clearIssue()
+        if systemInterruptionActive {
+            wasPlayingBeforeInterruption = true
+            return
         }
+        if pendingSeek == nil, let offset = recoverySeekOffset {
+            recoverySeekOffset = nil
+            seek(toCharIndex: offset, playAfterSeek: true)
+            return
+        }
+        reconcilePlayback(explicit: true)
+        updateNowPlayingPlaybackInfo()
     }
 
     public func pause(file: String = #file, line: Int = #line, function: String = #function) {
         audioPreparationID = nil
+        fallbackTransitionID = nil
+        isWaitingForForeground = false
+        setActualPlayback(false)
         Log.audio.info("pause called from \(function):\(line)")
         pendingSeek?.shouldPlay = false
         traceSeek("pause-intent")
@@ -444,11 +506,7 @@ public class AudioPlaybackEngine: ObservableObject {
     
 
     public func togglePlayPause() {
-        if isPlaying {
-            pause()
-        } else {
-            play()
-        }
+        if coordinator.desiredPlayIntent == .playing { pause() } else { play() }
     }
     
     public func resetAndSeek(to targetTime: TimeInterval) {
@@ -463,6 +521,7 @@ public class AudioPlaybackEngine: ObservableObject {
     
     func cancelPendingSeek() {
         pendingSeek = nil
+        deferredSeekTarget = nil
         seekRevision &+= 1
         seekDebounceTimer?.invalidate()
         seekDebounceTimer = nil
@@ -472,18 +531,19 @@ public class AudioPlaybackEngine: ObservableObject {
 
     public func seek(to targetTime: TimeInterval) {
         guard targetTime.isFinite else { return }
-        scheduleSeek { engine, request in engine.performSeek(to: targetTime, request: request) }
+        scheduleSeek(target: .time(targetTime)) { engine, request in engine.performSeek(to: targetTime, request: request) }
     }
 
     public func seek(toCharIndex charIndex: Int, playAfterSeek: Bool = false) {
-        scheduleSeek(playAfterSeek: playAfterSeek, characterOffset: charIndex) { engine, request in
+        scheduleSeek(playAfterSeek: playAfterSeek, characterOffset: charIndex, target: .character(charIndex)) { engine, request in
             engine.performSeek(toCharIndex: charIndex, request: request)
         }
     }
 
-    private func scheduleSeek(playAfterSeek: Bool = false, characterOffset: Int? = nil,
+    private func scheduleSeek(playAfterSeek: Bool = false, characterOffset: Int? = nil, target: DeferredSeekTarget,
                               _ action: @escaping @MainActor (AudioPlaybackEngine, PendingSeek) -> Void) {
         guard let request = beginSeek(playAfterSeek: playAfterSeek, characterOffset: characterOffset) else { return }
+        deferredSeekTarget = target
         let timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.isCurrentSeek(request) else { return }
@@ -518,6 +578,7 @@ public class AudioPlaybackEngine: ObservableObject {
                     self.checkKokoroBufferUnderrun()
                 }
 
+                guard !self.coordinator.isAppleActive else { return }
                 // Determine global time by identifying the current playing chunk
                 guard let currentItem = self.queuePlayer?.currentItem,
                       let currentURL = (currentItem.asset as? AVURLAsset)?.url,
@@ -550,7 +611,7 @@ public class AudioPlaybackEngine: ObservableObject {
                     if let foundIndex = ans {
                         let word = timestamps[foundIndex]
                         if localPlayTime <= word.endTime + 0.5 {
-                            PlaybackProgress.shared.currentWord = word
+                            self.currentWord = word
                             if let loc = word.rangeLocation {
                                 self.coordinator.advanceDisplay(toUTF16Offset: loc)
                             }
@@ -558,16 +619,10 @@ public class AudioPlaybackEngine: ObservableObject {
                     }
                 }
                 
-                // Periodically save progress
-                if let doc = self.currentDocument, let context = doc.modelContext {
-                    if self.duration > 0 && abs(self.currentTime - self.lastProgressSaveTime) > 5.0 {
-                        doc.progress = self.currentTime / self.duration
-                        doc.lastReadCharIndex = PlaybackProgress.shared.currentWord?.rangeLocation ?? doc.lastReadCharIndex
-                        self.lastProgressSaveTime = self.currentTime
-                        try? context.save()
-                    }
-                    self.updateEffectivePlaybackRate()
-                }
+                self.observeDeliveredKokoroWords(in: playingChunk, item: currentItem, time: localPlayTime)
+                self.sampleActualPlayback()
+                self.saveDocumentProgressIfNeeded()
+                self.updateEffectivePlaybackRate()
             }
         }
     }
@@ -589,6 +644,8 @@ public class AudioPlaybackEngine: ObservableObject {
     func removePlayerObservers() {
         playerTimeControlCancellable?.cancel()
         playerTimeControlCancellable = nil
+        playerCurrentItemCancellable?.cancel()
+        playerCurrentItemCancellable = nil
     }
 
     
@@ -609,27 +666,21 @@ public class AudioPlaybackEngine: ObservableObject {
     func handlePlaybackItemEnded(_ item: AVPlayerItem) {
         guard pendingSeek == nil, !coordinator.isAppleActive,
               activeQueueItems.remove(ObjectIdentifier(item)) != nil else { return }
+        itemStatusSubscriptions.removeValue(forKey: ObjectIdentifier(item))
         if let url = (item.asset as? AVURLAsset)?.url,
            let chunk = chunks.first(where: { $0.url == url }) {
+            observeDeliveredKokoroWords(in: chunk, item: item, time: chunk.duration, finishing: true)
             coordinator.commitChunkBoundary(chunk)
         }
-        if queuePlayer?.items().isEmpty ?? true {
-            if hasReachedDocumentEnd {
-                pause()
-                let revision = seekRevision
-                let documentID = currentDocument?.id
-                Task { @MainActor [weak self] in
-                    guard let self, self.pendingSeek == nil, self.seekRevision == revision,
-                          self.currentDocument?.id == documentID else { return }
-                    PlaybackCoordinator.shared.advanceNext()
-                }
-            } else if isPlaying || coordinator.desiredPlayIntent == .playing {
-                triggerFallbackToAppleSpeech(reason: "Kokoro audio buffer underrun (queue exhausted before EOF)")
-            }
+        listeningItems.removeValue(forKey: ObjectIdentifier(item))
+        if activeQueueItems.isEmpty {
+            setActualPlayback(false)
+            if generationEOF { completeLogicalPlayback() }
+            else if coordinator.desiredPlayIntent == .playing { reconcilePlayback(explicit: false) }
         }
     }
-    
-    
+
+
     func setupNowPlaying() {
         setRemoteCommandsEnabled(true)
         guard let doc = currentDocument else { return }
@@ -655,116 +706,53 @@ public class AudioPlaybackEngine: ObservableObject {
         coordinator.isFallbackActive
     }
 
-    var hasReachedDocumentEnd: Bool {
-        guard let doc = currentDocument else { return true }
-        if let committed = coordinator.contract?.committedCursor {
-            return committed.globalUTF16Offset >= doc.bodyText.utf16.count
-        }
-        return currentTime >= (duration - 0.5) && !isGenerationActive
-    }
-
+    var hasReachedDocumentEnd: Bool { coordinator.contract?.lifecycle == .completed || generationEOF && activeQueueItems.isEmpty }
 
     public func triggerFallbackToAppleSpeech(reason: String) {
+        guard fallbackTransitionID == nil, pendingSeek == nil, coordinator.contract?.lifecycle == .active,
+              coordinator.desiredPlayIntent == .playing, !coordinator.isAppleActive,
+              !hasReachedDocumentEnd, let document = currentDocument else { return }
+        guard allowsAutomaticFallback else { waitForSafeGeneration(); return }
         cancelSpeculativeHandback()
-        guard pendingSeek == nil, !coordinator.isAppleActive, let doc = currentDocument,
-              let fallbackSessionID = coordinator.contract?.sessionID else { return }
-        let fallbackDocumentID = doc.id
-        let fallbackSeekRevision = seekRevision
-        
-        Log.audio.warning("Triggering fallback to Apple Speech. Reason: \(reason, privacy: .public)")
-        
-        // 1. Synchronously check if the current playing chunk has reached or is near its end duration.
-        // If so, commit its boundary immediately before canceling or clearing items to avoid repeating the chunk.
-        if let currentItem = queuePlayer?.currentItem,
-           let currentURL = (currentItem.asset as? AVURLAsset)?.url,
-           let currentChunk = chunks.first(where: { $0.url.lastPathComponent == currentURL.lastPathComponent }) {
-            let itemDuration = currentItem.duration.seconds
-            let itemCurrentTime = currentItem.currentTime().seconds
-            if !itemDuration.isNaN && itemDuration > 0 && itemCurrentTime >= (itemDuration - 0.25) {
-                coordinator.commitChunkBoundary(currentChunk)
-            }
-        }
-
-        // 2. Pause playback and cancel Kokoro generation tasks
-        // 2. Cancel Kokoro generation tasks (but do NOT pause AVQueuePlayer yet so it overlaps)
-        AudioGenerationManager.shared.cancelCurrentGeneration(preservingPlaybackIntent: true)
-        isGenerationActive = false
-        isRecoveringFromUnderrun = false
-        
-        // 3. Adjust duration to full document duration if available
-        if doc.estimatedDuration > 0 {
-            self.duration = doc.estimatedDuration
-        }
-        
-        // 4. Trigger handoff in coordinator while state and cursors are fully resolved
-        let wasPlaying = self.isPlaying || (coordinator.contract?.desiredPlayIntent == .playing)
-        
-        if wasPlaying {
-            var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
-            backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "AppleSpeechFallback") {
-                if backgroundTaskID != .invalid {
-                    UIApplication.shared.endBackgroundTask(backgroundTaskID)
-                    backgroundTaskID = .invalid
+        let request = UUID()
+        fallbackTransitionID = request
+        let run = coordinator.contract?.sessionID
+        let revision = seekRevision
+        prepareAudioSession { [weak self] result in
+            guard let self, self.fallbackTransitionID == request, self.seekRevision == revision,
+                  self.currentDocument?.id == document.id, self.coordinator.contract?.sessionID == run,
+                  self.coordinator.contract?.lifecycle == .active, self.coordinator.desiredPlayIntent == .playing,
+                  self.allowsAutomaticFallback, !self.hasReachedDocumentEnd else { return }
+            self.fallbackTransitionID = nil
+            if case .failure(let error) = result {
+                if !(error is CancellationError) {
+                    self.pause()
+                    self.generationManager.reportPlaybackFailure(error, engine: self, stage: "fallback audio session")
                 }
+                return
             }
-            
-            AppAudioSession.shared.prepare(owner: audioSessionOwner, reason: "fallback") { [weak self] result in
-                defer {
-                    if backgroundTaskID != .invalid {
-                        UIApplication.shared.endBackgroundTask(backgroundTaskID)
-                        backgroundTaskID = .invalid
-                    }
-                }
-                guard let self,
-                      self.currentDocument?.id == fallbackDocumentID,
-                      self.seekRevision == fallbackSeekRevision, self.pendingSeek == nil,
-                      self.coordinator.contract?.sessionID == fallbackSessionID else { return }
-                if case .failure(let error) = result {
-                    if !(error is CancellationError) {
-                        self.pause()
-                        self.coordinator.reportAudioSessionFailure(error)
-                    }
-                    return
-                }
-                guard self.coordinator.desiredPlayIntent == .playing else { return }
-
-                let success = self.coordinator.triggerFallback(reason: reason)
-                self.removeQueuedItems()
-                self.chunks.removeAll()
-
-                if success {
-                    self.currentTime = self.coordinator.estimatedCurrentTime
-                    self.isPlaying = self.coordinator.desiredPlayIntent == .playing
-                    self.wallClockSessionStartTime = Date().timeIntervalSinceReferenceDate
-                    self.updateNowPlayingPlaybackInfo()
-                }
-
-
-            }
-        } else {
-            let success = coordinator.triggerFallback(reason: reason)
-            removeQueuedItems()
-            chunks.removeAll()
-            
-            if success {
-                self.currentTime = coordinator.estimatedCurrentTime
-                self.updateNowPlayingPlaybackInfo()
-            }
+            guard self.activeQueueItems.isEmpty else { return }
+            self.queuePlayer?.pause()
+            self.setActualPlayback(false)
+            self.generationManager.cancelCurrentGeneration(preservingPlaybackIntent: true)
+            guard self.coordinator.triggerFallback(reason: reason) else { return }
+            self.removeQueuedItems(); self.chunks.removeAll()
+            self.duration = document.estimatedDuration
+            self.currentTime = self.coordinator.estimatedCurrentTime
+            self.isPlaying = true
+            self.isWaitingForForeground = false
+            PlaybackDiagnostics.shared.record("route=apple-fallback run=\(run?.uuidString ?? "none")")
+            self.updateNowPlayingPlaybackInfo()
+            if self.applicationPhase == .active { self.triggerSpeculativeHandbackPreparation(for: document) }
         }
     }
-
-    // MARK: - Speculative Foreground Handback (Phase 6)
 
     func handleWillEnterForeground() {
-        guard coordinator.isFallbackActive, let doc = currentDocument, (isPlaying || coordinator.contract?.desiredPlayIntent == .playing) else { return }
-        Log.audio.info("Application returning to foreground during Apple Speech fallback; initiating speculative handback preparation.")
-        // Keep speech flowing until a replacement chunk is actually ready.
-        triggerSpeculativeHandbackPreparation(for: doc)
+        // Foreground entry alone does not grant GPU permission or start playback.
     }
 
-
     func cancelSpeculativeHandback() {
-        AudioGenerationManager.shared.cancelSpeculativePreparation()
+        generationManager.cancelSpeculativePreparation()
         coordinator.cancelPendingHandback()
     }
 

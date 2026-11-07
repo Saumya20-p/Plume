@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State private var cacheSizeString: String = "Calculating..."
     @State private var voicePreferences: VoicePreferences = VoicePreferencesStore().load()
     
+    @AppStorage("keepScreenAwakeWhileListening") private var keepScreenAwake = false
     @AppStorage("deleteFolderContents") private var deleteFolderContents: Bool = false
     
     var body: some View {
@@ -45,6 +46,10 @@ struct SettingsView: View {
                     }
                 }
                 
+                Section(footer: Text("Keeps the visible reader awake while listening or preparing audio. Uses more battery. Normal screen locking returns when you pause or leave the reader.")) {
+                    Toggle("Keep Screen Awake While Listening", isOn: $keepScreenAwake)
+                }
+
                 Section(header: Text("Voice")) {
                     NavigationLink(destination: VoiceSettingsView()) {
                         HStack {

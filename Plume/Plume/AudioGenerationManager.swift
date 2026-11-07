@@ -1,427 +1,244 @@
+import Combine
 import Foundation
 import SwiftUI
-import Combine
-import os
 import AVFoundation
-import CoreMedia
 
-public enum GenerationMode: Sendable {
-    case standard
-    case preparationOnly
+public enum GenerationMode: Sendable { case standard, preparationOnly }
+enum GenerationTermination { case eof, failed, retired, cancelled }
+
+@MainActor protocol PlaybackChunkStream: AnyObject {
+    func nextResult() async throws -> AudioGenerationOutcome
 }
+extension AudioChunkGenerator: PlaybackChunkStream {}
 
-@MainActor
-public class AudioGenerationManager: ObservableObject {
+/// Generation is scoped to a logical run and seek. Task cancellation never sets
+/// a process-wide bit that can poison a replacement run or a voice preview.
+@MainActor public class AudioGenerationManager: ObservableObject {
     public static let shared = AudioGenerationManager()
-    
     @Published public var generatingDocumentIDs: Set<UUID> = []
     @Published public var lastError: String?
     @Published public var generationProgress: String?
     @Published public private(set) var generationMode: GenerationMode = .standard
-    @Published public private(set) var isSpeculativeGenerating: Bool = false
-    
-    private let highWatermarkSeconds: TimeInterval = 120.0  // ~2 min buffer ahead
-    private let lowWatermarkSeconds: TimeInterval = 90.0    // resume threshold
-    
-    /// The in-flight generation Task, stored so it can be cancelled.
+    @Published public private(set) var isSpeculativeGenerating = false
+    private(set) var issue: PlaybackIssue?
     private var generationTask: Task<Void, Never>?
     private var speculativeGenerationTask: Task<Void, Never>?
     private var speculativeSessionID: UUID?
     internal var cancellationTask: Task<Void, Never>?
     private var generationRunState = PlaybackGenerationRunState()
     private weak var activePlaybackEngine: AudioPlaybackEngine?
-    
-    public var isGeneratingAny: Bool {
-        !generatingDocumentIDs.isEmpty || isSpeculativeGenerating
+    var onTaskFinished: ((UUID) -> Void)?
+    var makeStream: (Document, PlaybackGenerationSession, Int) async throws -> any PlaybackChunkStream = {
+        try await KokoroTTSService.shared.synthesizeGenerator(document: $0, session: $1, startChunkIndex: $2)
     }
-    
-    private var cancellables = Set<AnyCancellable>()
-    
-    private init() {
-        // Pause Metal GPU work when going to background to prevent SIGABRT
-        // from iOS revoking GPU access on backgrounded apps.
-        // CRITICAL: This MUST be synchronous. Using Task { await ... } is too late —
-        // by the time the async Task reaches the actor, iOS has already revoked GPU
-        // access and in-flight Metal command buffers cause SIGABRT.
-        NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)
-            .sink { [weak self] _ in
-                guard self != nil else { return }
-                MainActor.assumeIsolated {
-                    // Immediately prevent new GPU work from starting.
-                    // Instantaneous (~1 microsecond) — zero gesture lag.
-                    KokoroTTSService.shared.getEngineActorSync()?.backgroundState.isPaused = true
-                }
-            }
-            .store(in: &cancellables)
-        
-        // Resume Metal GPU work immediately when returning to foreground
-        // (willEnterForeground rather than waiting for didBecomeActive to eliminate 400ms cold start latency)
-        NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
-            .sink { [weak self] _ in
-                guard self != nil else { return }
-                MainActor.assumeIsolated {
-                    KokoroTTSService.shared.getEngineActorSync()?.backgroundState.isPaused = false
-                }
-            }
-            .store(in: &cancellables)
-        
-        NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
-            .sink { [weak self] _ in
-                guard self != nil else { return }
-                MainActor.assumeIsolated {
-                    KokoroTTSService.shared.getEngineActorSync()?.backgroundState.isPaused = false
-                }
-            }
-            .store(in: &cancellables)
-    }
-    
-    
-    public func generate(document: Document, playbackEngine: AudioPlaybackEngine, startChunkIndex: Int = 0, preservingPlaybackSession: Bool = false) {
-        cancelSpeculativePreparation()
+    public var isGeneratingAny: Bool { !generatingDocumentIDs.isEmpty || isSpeculativeGenerating }
+    init() {}
 
-        // Guard against duplicate taps
-        guard !generatingDocumentIDs.contains(document.id) else { return }
-        
-        // Guard against concurrent generations
-        guard !isGeneratingAny else {
-            lastError = "Another chapter is currently generating."
-            return
+    private struct Context {
+        let runID: UUID
+        let seek: Int
+        let source: String
+        let voice: PlaybackVoiceID
+        let documentID: UUID
+        init?(document: Document, engine: AudioPlaybackEngine) {
+            guard let contract = engine.coordinator.contract, contract.lifecycle == .active,
+                  case .kokoro = contract.primaryVoice else { return nil }
+            runID = contract.sessionID; seek = engine.seekRevision; source = document.bodyText
+            voice = contract.primaryVoice; documentID = document.id
         }
-        
-        lastError = nil
-        generationProgress = "Preparing..."
-        generatingDocumentIDs.insert(document.id)
-        
-        let documentID = document.id
-        let session = KokoroGenerationSessionFactory.make(
-            documentID: documentID,
-            defaults: .standard
-        )
+        func accepts(_ engine: AudioPlaybackEngine) -> Bool {
+            engine.currentDocument?.id == documentID && engine.currentDocument?.bodyText == source &&
+            engine.coordinator.contract?.sessionID == runID && engine.seekRevision == seek &&
+            engine.coordinator.contract?.primaryVoice == voice && engine.coordinator.contract?.lifecycle == .active
+        }
+    }
+
+    func clearIssue() { lastError = nil; issue = nil }
+    func reportPlaybackFailure(_ error: Error, engine: AudioPlaybackEngine, stage: String) {
+        guard !(error is CancellationError), let document = engine.currentDocument,
+              let contract = engine.coordinator.contract, contract.lifecycle != .completed else { return }
+        let issue = PlaybackIssue(documentID: document.id, runID: contract.sessionID,
+            segment: engine.coordinator.currentOrUpcomingSegmentIndex, stage: stage, error: error)
+        self.issue = issue; lastError = issue.message
+        engine.generationFailed = true
+        PlaybackDiagnostics.shared.record("playback-failed stage=\(issue.stage) codes=\(issue.codes.joined(separator: ",")) id=\(issue.id)")
+    }
+    public func generate(document: Document, playbackEngine: AudioPlaybackEngine, startChunkIndex: Int = 0,
+                         preservingPlaybackSession: Bool = false) {
+        guard !generatingDocumentIDs.contains(document.id), startChunkIndex >= 0 else { return }
+        cancelSpeculativePreparation()
+        guard generatingDocumentIDs.isEmpty else { return }
+        if playbackEngine.currentDocument?.id != document.id || playbackEngine.coordinator.contract == nil {
+            playbackEngine.load(document: document)
+        }
+        guard let context = Context(document: document, engine: playbackEngine) else { return }
+        let session = PlaybackGenerationSession(documentID: document.id, voice: context.voice)
         generationRunState.activate(sessionID: session.id)
         activePlaybackEngine = playbackEngine
+        generatingDocumentIDs.insert(document.id)
+        clearIssue()
+        generationProgress = "Preparing…"
         playbackEngine.beginGenerationSession(session)
-        
-        if startChunkIndex == 0 && !preservingPlaybackSession {
-            playbackEngine.load(document: document, generationSession: session)
-        }
-        
-        guard let writer = try? AudioCacheStore.shared.beginWriting(documentID: documentID) else {
-            completeGeneration(sessionID: session.id, documentID: documentID, playbackEngine: playbackEngine)
-            return
-        }
         generationTask = Task { @MainActor [weak self, weak playbackEngine] in
-            defer { AudioCacheStore.shared.finishWriting(writer) }
-            guard let self, let playbackEngine else { return }
-
+            guard let self, let engine = playbackEngine else { return }
+            var stage = "cache preparation"
+            var segment = startChunkIndex
+            var termination = GenerationTermination.retired
             defer {
-                self.completeGeneration(
-                    sessionID: session.id,
-                    documentID: documentID,
-                    playbackEngine: playbackEngine
-                )
+                self.completeGeneration(sessionID: session.id, documentID: document.id, playbackEngine: engine, termination: termination)
+                self.onTaskFinished?(session.id)
             }
-            
-            if let cancelTask = self.cancellationTask {
-                await cancelTask.value
-            }
-            
-            guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { return }
-            await KokoroTTSService.shared.resetCancellation()
-            
-            // Prevent the device from sleeping while generating in the foreground
-            UIApplication.shared.isIdleTimerDisabled = true
-            
             do {
-                
-                let generator = try await KokoroTTSService.shared.synthesizeGenerator(
-                    document: document,
-                    session: session,
-                    startChunkIndex: startChunkIndex
-                )
-                
-                var isFirst = true
-                var totalChunks = startChunkIndex
-                
-                var isThrottled = false
-                
-                while true {
-                    guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { break }
-                    
-                    // Ensure we don't spam generation loops if it's completely unchecked,
-                    // but since nextChunk() is blocking and tied to TTS progress, we can just await it.
-                    // Throttle only if buffer is very large so we don't use all RAM.
-                    while true {
-                        guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { break }
-                        let bufferedDuration = playbackEngine.bufferedTime
-                        let currentPlayTime = playbackEngine.currentTime
-                        
-                        let bufferAhead = bufferedDuration - currentPlayTime
-                        
-                        // High Watermark throttling only
-                        if !isThrottled && bufferAhead > self.highWatermarkSeconds {
-                            isThrottled = true
-                        }
-                        if isThrottled && bufferAhead <= self.lowWatermarkSeconds {
-                            isThrottled = false
-                        }
-                        
-                        if !isThrottled {
-                            break
-                        }
-                        
-                        self.generationProgress = "Buffering... (\(Int(bufferAhead))s ahead)"
-                        try await Task.sleep(nanoseconds: 1_000_000_000)
-                    }
-                    
-                    guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { break }
-                    
-                    // Background Metal safety is handled by the engine actor's
-                    // tryStartExecuting() gate, which blocks when isPaused is true
-                    // (set by willResignActiveNotification handler).
-                    
-                    // 2. Safely generate the chunk (guaranteed to not hit background Metal revocation)
-                    guard let chunk = try await generator.nextChunk() else {
-                        break // End of chapter
-                    }
-                    
-                    try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: chunk.fileURL.path)
-
-                    guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { break }
-                    
-                    let exactDuration = try await AVURLAsset(url: chunk.fileURL).load(.duration).seconds
-                    guard self.generationRunState.accepts(.work(sessionID: session.id)), !Task.isCancelled else { break }
-                    
-                    // 3. Process the chunk
-                    totalChunks += 1
-                    
-                    let updatedChunk = AudioChunk(
-                        identity: chunk.identity,
-                        fileURL: chunk.fileURL,
-                        duration: exactDuration,
-                        timestamps: chunk.timestamps
-                    )
-                    
-                    let currentChunkCount = totalChunks
-                    self.generationProgress = "Streaming chunk \(currentChunkCount)..."
-                    
-                    guard self.generationRunState.accepts(.enqueue(sessionID: session.id)), !Task.isCancelled else { break }
-                    
-                    guard playbackEngine.enqueue(chunk: updatedChunk) else { break }
-                    if isFirst {
-                        if playbackEngine.coordinator.contract?.desiredPlayIntent != .paused {
-                            playbackEngine.play()
-                        }
-                        isFirst = false
+                let writer = try AudioCacheStore.shared.beginWriting(documentID: document.id)
+                defer { AudioCacheStore.shared.finishWriting(writer) }
+                stage = "model preparation"
+                let stream = try await self.makeStream(document, session, startChunkIndex)
+                var throttled = false
+                while self.generationRunState.accepts(.work(sessionID: session.id)) && context.accepts(engine) {
+                    try Task.checkCancellation()
+                    let ahead = engine.bufferedTime - engine.currentTime
+                    if ahead > 120 { throttled = true }
+                    if ahead <= 90 { throttled = false }
+                    if throttled { try await Task.sleep(for: .seconds(1)); continue }
+                    stage = "speech generation"
+                    let outcome = try await stream.nextResult()
+                    try Task.checkCancellation()
+                    guard context.accepts(engine), self.generationRunState.accepts(.enqueue(sessionID: session.id)) else { return }
+                    switch outcome {
+                    case .endOfDocument:
+                        termination = .eof
+                        engine.generationReachedEOF(sessionID: session.id)
+                        return
+                    case .nonSpeech(let id):
+                        segment = id.ordinal + 1
+                        continue
+                    case .audio(let chunk):
+                        segment = chunk.identity.segmentID.ordinal
+                        stage = "audio validation"
+                        let validated = try await Self.validate(chunk)
+                        try Task.checkCancellation()
+                        guard context.accepts(engine), self.generationRunState.accepts(.enqueue(sessionID: session.id)) else { return }
+                        self.generationProgress = "Preparing audio…"
+                        guard engine.enqueue(chunk: validated) else { return }
+                        if engine.pendingSeek == nil && engine.coordinator.desiredPlayIntent == .playing { engine.resumeQueuedPlayback() }
+                        segment += 1
                     }
                 }
             } catch {
-                guard self.generationRunState.accepts(.failure(sessionID: session.id)) else { return }
-                if !(error is CancellationError) {
-                    Log.tts.error("Failed to synthesize: \(error.localizedDescription, privacy: .public)")
-                    self.lastError = "Failed to generate audio: \(error.localizedDescription)"
-                }
+                guard !Task.isCancelled, !(error is CancellationError), context.accepts(engine),
+                      self.generationRunState.accepts(.failure(sessionID: session.id)) else { return }
+                let issue = PlaybackIssue(documentID: document.id, runID: context.runID, segment: segment, stage: stage, error: error)
+                self.issue = issue; self.lastError = issue.message
+                PlaybackDiagnostics.shared.record("generation-failed run=\(context.runID) segment=\(segment) stage=\(stage) codes=\(issue.codes.joined(separator: ",")) id=\(issue.id)")
+                engine.generationFailed = true
+                engine.isWaitingForForeground = false
+                termination = .failed
             }
         }
+    }
+
+    static func validate(_ chunk: AudioChunk) async throws -> AudioChunk {
+        guard FileManager.default.fileExists(atPath: chunk.fileURL.path), chunk.duration.isFinite, chunk.duration > 0 else {
+            throw NSError(domain: "Plume.AudioValidation", code: 1)
+        }
+        try Task.checkCancellation()
+        let duration = try await AVURLAsset(url: chunk.fileURL).load(.duration).seconds
+        guard duration.isFinite, duration > 0 else { throw NSError(domain: "Plume.AudioValidation", code: 2) }
+        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: chunk.fileURL.path)
+        return AudioChunk(identity: chunk.identity, fileURL: chunk.fileURL, duration: duration, timestamps: chunk.timestamps)
     }
 
     public func cancelCurrentGeneration(preservingPlaybackIntent: Bool = false) {
         cancelSpeculativePreparation()
-
-        let cancelledSessionID = generationRunState.invalidateCurrent()
-        let cancelledDocumentID = generatingDocumentIDs.first
-        let playbackEngine = activePlaybackEngine
-
-        activePlaybackEngine = nil
-        generationTask?.cancel()
-        generationTask = nil
-        
-        // Also tell the TTS engine to stop
-        let previousCancel = cancellationTask
-        cancellationTask = Task {
-            if let previousCancel {
-                await previousCancel.value
-            }
-            await KokoroTTSService.shared.cancelGeneration()
-        }
-        
-        if let cancelledDocumentID {
-            generatingDocumentIDs.remove(cancelledDocumentID)
-        }
-        generationProgress = nil
-        UIApplication.shared.isIdleTimerDisabled = false
-
-        if let cancelledSessionID {
-            playbackEngine?.finishGeneration(sessionID: cancelledSessionID, preservingPlaybackIntent: preservingPlaybackIntent)
-        }
+        let cancelled = generationRunState.invalidateCurrent()
+        generationTask?.cancel(); generationTask = nil
+        generatingDocumentIDs.removeAll(); generationProgress = nil
+        let engine = activePlaybackEngine; activePlaybackEngine = nil
+        if let cancelled { engine?.finishGeneration(sessionID: cancelled, termination: preservingPlaybackIntent ? .retired : .cancelled) }
     }
 
-    // MARK: - Speculative Preparation (Phase 6 Handback)
-
-    /// Starts speculative generation of audio chunks for upcoming sentences without playing them.
-    /// Chunks are staged into `PlaybackRoutingCoordinator` to allow an atomic handback swap
-    /// once Apple Speech finishes its current sentence.
-    public func startSpeculativePreparation(
-        document: Document,
-        playbackEngine: AudioPlaybackEngine,
-        startChunkIndex: Int
-    ) {
-        guard startChunkIndex >= 0 else { return }
-
-        // If already generating, cancel the existing generation and restart with new startChunkIndex
-        if !generatingDocumentIDs.isEmpty {
-            cancelCurrentGeneration()
-        }
-        cancelSpeculativePreparation()
-
-        isSpeculativeGenerating = true
-        generationMode = .preparationOnly
-        generationProgress = "Speculatively preparing Kokoro..."
-        activePlaybackEngine = playbackEngine
-
-        let documentID = document.id
-        let session = KokoroGenerationSessionFactory.make(
-            documentID: documentID,
-            defaults: .standard
-        )
+    public func startSpeculativePreparation(document: Document, playbackEngine: AudioPlaybackEngine, startChunkIndex: Int) {
+        guard let context = Context(document: document, engine: playbackEngine), startChunkIndex >= 0,
+              playbackEngine.isFallbackActive, playbackEngine.applicationPhase == .active,
+              playbackEngine.coordinator.desiredPlayIntent == .playing else { return }
+        if isSpeculativeGenerating { return }
+        if !generatingDocumentIDs.isEmpty { cancelCurrentGeneration(preservingPlaybackIntent: true) }
+        let session = PlaybackGenerationSession(documentID: document.id, voice: context.voice)
         speculativeSessionID = session.id
-
-        guard let writer = try? AudioCacheStore.shared.beginWriting(documentID: documentID) else {
-            cancelSpeculativePreparation()
-            return
-        }
+        isSpeculativeGenerating = true; generationMode = .preparationOnly
+        playbackEngine.coordinator.beginHandbackPreparation(session)
         speculativeGenerationTask = Task { @MainActor [weak self, weak playbackEngine] in
-            defer { AudioCacheStore.shared.finishWriting(writer) }
-            guard let self = self, let playbackEngine = playbackEngine else { return }
+            guard let self, let engine = playbackEngine else { return }
             defer {
                 if self.speculativeSessionID == session.id {
-                    self.isSpeculativeGenerating = false
-                    self.speculativeGenerationTask = nil
-                    self.generationMode = .standard
-                    self.generationProgress = nil
+                    self.speculativeSessionID = nil; self.speculativeGenerationTask = nil
+                    self.isSpeculativeGenerating = false; self.generationMode = .standard
+                    engine.coordinator.finishHandbackPreparation(session.id)
                 }
             }
-
-            if let cancelTask = self.cancellationTask {
-                await cancelTask.value
-            }
-            guard !Task.isCancelled, playbackEngine.isFallbackActive else { return }
-            await KokoroTTSService.shared.resetCancellation()
-
             do {
-                let generator = try await KokoroTTSService.shared.synthesizeGenerator(
-                    document: document,
-                    session: session,
-                    startChunkIndex: startChunkIndex
-                )
-
-                var currentChunkIndex = startChunkIndex
-                while !Task.isCancelled && playbackEngine.isFallbackActive {
-                    guard let chunk = try await generator.nextChunk() else {
-                        break
-                    }
-                    try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: chunk.fileURL.path)
-
-                    guard !Task.isCancelled, playbackEngine.isFallbackActive else { break }
-
-                    let exactDuration = try await AVURLAsset(url: chunk.fileURL).load(.duration).seconds
-                    guard !Task.isCancelled, playbackEngine.isFallbackActive else { break }
-
-                    let updatedChunk = AudioChunk(
-                        identity: chunk.identity,
-                        fileURL: chunk.fileURL,
-                        duration: exactDuration,
-                        timestamps: chunk.timestamps
-                    )
-
-                    playbackEngine.coordinator.stageHandbackChunk(updatedChunk, session: session)
-                    currentChunkIndex += 1
-
-                    // If Apple Speech is not speaking right now, trigger handback immediately
-                    if !playbackEngine.coordinator.isAppleSpeaking {
-                        playbackEngine.coordinator.triggerHandback()
-                        break
-                    }
-
-                    // Buffer at most 2 speculative chunks ahead
-                    if playbackEngine.coordinator.stagedHandbackChunks.count >= 2 {
-                        break
+                let writer = try AudioCacheStore.shared.beginWriting(documentID: document.id)
+                defer { AudioCacheStore.shared.finishWriting(writer) }
+                let stream = try await self.makeStream(document, session, startChunkIndex)
+                while context.accepts(engine) && engine.isFallbackActive && engine.applicationPhase == .active {
+                    try Task.checkCancellation()
+                    let result = try await stream.nextResult()
+                    try Task.checkCancellation()
+                    guard self.speculativeSessionID == session.id, context.accepts(engine),
+                          engine.isFallbackActive, engine.applicationPhase == .active else { return }
+                    switch result {
+                    case .endOfDocument: return
+                    case .nonSpeech: continue
+                    case .audio(let chunk):
+                        let audio = try await Self.validate(chunk)
+                        try Task.checkCancellation()
+                        guard self.speculativeSessionID == session.id, context.accepts(engine),
+                              engine.isFallbackActive, engine.applicationPhase == .active else { return }
+                        engine.coordinator.stageHandbackChunk(audio, session: session)
+                        if engine.coordinator.stagedHandbackChunks.count >= 2 || !engine.isFallbackActive { return }
                     }
                 }
             } catch {
-                if !(error is CancellationError) {
-                    Log.tts.error("Failed speculative synthesis: \(error.localizedDescription, privacy: .public)")
+                guard !Task.isCancelled, context.accepts(engine), self.speculativeSessionID == session.id else { return }
+                let issue = PlaybackIssue(documentID: document.id, runID: context.runID, segment: startChunkIndex,
+                                          stage: "handback preparation", error: error)
+                PlaybackDiagnostics.shared.record("handback-failed codes=\(issue.codes.joined(separator: ",")) id=\(issue.id)")
+                if !engine.allowsAutomaticFallback {
+                    // With fallback disabled there is no producer to keep
+                    // flowing after the current Apple sentence. Expose Retry
+                    // instead of leaving an active-foreground wait stranded.
+                    self.reportPlaybackFailure(error, engine: engine, stage: "Kokoro restoration")
+                    if !engine.coordinator.isAppleSpeaking { engine.pause() }
                 }
             }
         }
     }
 
-    /// Fetches a single audio chunk speculatively without streaming or enqueuing it.
-    public func generateSpeculativeChunk(
-        document: Document,
-        chunkIndex: Int
-    ) async throws -> AudioChunk? {
-        let writer = try AudioCacheStore.shared.beginWriting(documentID: document.id)
-        defer { AudioCacheStore.shared.finishWriting(writer) }
-        if let cancelTask = cancellationTask {
-            await cancelTask.value
-        }
-        try Task.checkCancellation()
-        await KokoroTTSService.shared.resetCancellation()
-
-        let session = KokoroGenerationSessionFactory.make(
-            documentID: document.id,
-            defaults: .standard
-        )
-        let generator = try await KokoroTTSService.shared.synthesizeGenerator(
-            document: document,
-            session: session,
-            startChunkIndex: chunkIndex
-        )
-        guard let chunk = try await generator.nextChunk() else {
-            return nil
-        }
-        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: chunk.fileURL.path)
-
-        let exactDuration = try await AVURLAsset(url: chunk.fileURL).load(.duration).seconds
-        return AudioChunk(
-            identity: chunk.identity,
-            fileURL: chunk.fileURL,
-            duration: exactDuration,
-            timestamps: chunk.timestamps
-        )
-    }
-
-    /// Cancels any in-flight speculative preparation and resets preparation state.
     public func cancelSpeculativePreparation() {
-        guard isSpeculativeGenerating || speculativeGenerationTask != nil else { return }
-        Log.tts.info("Canceling speculative Kokoro generation.")
-        speculativeGenerationTask?.cancel()
-        speculativeGenerationTask = nil
-        isSpeculativeGenerating = false
-        generationMode = .standard
-        speculativeSessionID = nil
-        generationProgress = nil
-        let previousCancel = cancellationTask
-        cancellationTask = Task {
-            if let previousCancel {
-                await previousCancel.value
+        speculativeGenerationTask?.cancel(); speculativeGenerationTask = nil
+        speculativeSessionID = nil; isSpeculativeGenerating = false; generationMode = .standard
+    }
+
+    public func generateSpeculativeChunk(document: Document, chunkIndex: Int) async throws -> AudioChunk? {
+        let engine = activePlaybackEngine ?? AudioPlaybackEngine.shared
+        guard let context = Context(document: document, engine: engine) else { return nil }
+        let session = PlaybackGenerationSession(documentID: document.id, voice: context.voice)
+        let stream = try await makeStream(document, session, chunkIndex)
+        while true {
+            try Task.checkCancellation()
+            guard context.accepts(engine) else { return nil }
+            switch try await stream.nextResult() {
+            case .endOfDocument: return nil
+            case .nonSpeech: continue
+            case .audio(let chunk): return try await Self.validate(chunk)
             }
-            await KokoroTTSService.shared.cancelGeneration()
         }
     }
 
-    private func completeGeneration(
-        sessionID: UUID,
-        documentID: UUID,
-        playbackEngine: AudioPlaybackEngine
-    ) {
+    private func completeGeneration(sessionID: UUID, documentID: UUID, playbackEngine: AudioPlaybackEngine, termination: GenerationTermination) {
         guard generationRunState.finish(sessionID: sessionID) else { return }
-
-        generationTask = nil
-        activePlaybackEngine = nil
-        generatingDocumentIDs.remove(documentID)
-        generationProgress = nil
-        UIApplication.shared.isIdleTimerDisabled = false
-        playbackEngine.finishGeneration(sessionID: sessionID)
+        generationTask = nil; activePlaybackEngine = nil
+        generatingDocumentIDs.remove(documentID); generationProgress = nil
+        playbackEngine.finishGeneration(sessionID: sessionID, termination: termination)
     }
 }

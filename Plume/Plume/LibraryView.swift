@@ -12,6 +12,13 @@ struct LibraryView: View {
     @State private var failedSharedTitle = ""
     @State private var failedSharedBody = ""
     @State private var failedSharedDestination = ImportDestination()
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private enum LaunchRevealPhase { case unresolved, ready, revealing, finished }
+    @State private var launchRevealPhase = LaunchRevealPhase.unresolved
+    private enum RevealTarget { case title, welcome }
+    @State private var revealTarget: RevealTarget?
+    @State private var waveReveal: CGFloat = 0
     @Environment(\.modelContext) private var modelContext
     // Sort pinned items first, then by dateAdded
     @Query(filter: #Predicate<Document> { $0.deletedAt == nil },
@@ -33,7 +40,7 @@ struct LibraryView: View {
     
     private var filteredDocuments: [Document] {
         documents.filter {
-            LibrarySearchScope.matches(title: $0.title, progress: $0.progress, folderID: $0.folder?.id,
+            LibrarySearchScope.matches(title: $0.title, progress: $0.readingProgress, folderID: $0.folder?.id,
                                        deleted: $0.deletedAt != nil, query: searchText, filter: filterSelection)
         }
     }
@@ -42,8 +49,87 @@ struct LibraryView: View {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         return folders.filter { folder in
             let active = folder.documents.filter { $0.deletedAt == nil }
-            let matchesFilter = filterSelection == .all || active.contains { filterSelection.matches(progress: $0.progress) }
+            let matchesFilter = filterSelection == .all || active.contains { filterSelection.matches(progress: $0.readingProgress) }
             return matchesFilter && (query.isEmpty || folder.name.localizedCaseInsensitiveContains(query))
+        }
+    }
+
+    private var reduceMotion: Bool {
+        #if DEBUG
+        if UIExperimentFixture.enabled && ProcessInfo.processInfo.arguments.contains("--ui-experiment-reduce-motion") {
+            return true
+        }
+        #endif
+        return systemReduceMotion
+    }
+
+    private var isGenuinelyEmpty: Bool {
+        documents.isEmpty && folders.isEmpty && filterSelection == .all
+            && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var activeRevealTarget: RevealTarget {
+        revealTarget ?? (isGenuinelyEmpty ? .welcome : .title)
+    }
+
+    private var emptyLibrary: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(spacing: 16) {
+                    LibraryBrandMark(waveReveal: waveReveal, isStatic: activeRevealTarget != .welcome || reduceMotion || launchRevealPhase == .finished)
+                        .frame(width: 112, height: 112)
+                    Text("Your next read, aloud.")
+                        .font(.title3.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
+                        .accessibilityIdentifier("library.empty.title")
+                    Text("Add a link, text, or a file to start listening.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Button(action: addToLibrary) {
+                        Text("Add to Library").frame(minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(DesignSystem.accent)
+                    .accessibilityIdentifier("library.empty.add")
+                }
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+                .padding(24)
+                .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+    }
+
+    private func addToLibrary() {
+        finishLaunchReveal()
+        onAdd(nil)
+    }
+
+    private func resolveLaunchReveal() {
+        guard launchRevealPhase == .ready, scenePhase == .active else { return }
+        revealTarget = isGenuinelyEmpty ? .welcome : .title
+        guard !reduceMotion, sharedImportsInFlight.isEmpty,
+              !showingSharedImportError, deletionError == nil,
+              playbackEngine.presentedPlayerDocument == nil else {
+            finishLaunchReveal()
+            return
+        }
+        launchRevealPhase = .revealing
+        withAnimation(.easeOut(duration: 0.4)) {
+            waveReveal = 1
+        } completion: {
+            guard launchRevealPhase == .revealing else { return }
+            finishLaunchReveal()
+        }
+    }
+
+    private func finishLaunchReveal() {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            launchRevealPhase = .finished
+            waveReveal = 1
         }
     }
 
@@ -95,7 +181,9 @@ struct LibraryView: View {
                     .padding(.horizontal)
                     .padding(.bottom, 16)
                 
-                if filteredDocuments.isEmpty && filteredFolders.isEmpty {
+                if isGenuinelyEmpty {
+                    emptyLibrary
+                } else if filteredDocuments.isEmpty && filteredFolders.isEmpty {
                     Spacer()
                     VStack(spacing: 12) {
                         Image(systemName: "books.vertical")
@@ -177,15 +265,32 @@ struct LibraryView: View {
                     .listStyle(.insetGrouped)
                 }
             }
+            .background(Color(uiColor: .systemBackground).ignoresSafeArea())
             .navigationTitle(playbackEngine.presentedPlayerDocument == nil ? "Library" : "")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if playbackEngine.presentedPlayerDocument == nil {
+                    ToolbarItem(placement: .principal) {
+                        HStack(spacing: 8) {
+                            LibraryBrandMark(waveReveal: waveReveal,
+                                             isStatic: activeRevealTarget != .title || reduceMotion || launchRevealPhase == .finished)
+                                .frame(width: 28, height: 28)
+                            Text("Library").font(.headline).lineLimit(1)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityAddTraits(.isHeader)
+                        .accessibilityIdentifier("library.title")
+                        #if DEBUG
+                        .accessibilityValue(UIExperimentFixture.enabled ? "\(revealTarget == .welcome ? "welcome" : "title"):\(String(describing: launchRevealPhase))" : "")
+                        #endif
+                    }
                     ToolbarItemGroup(placement: .topBarTrailing) {
-                        Button { onAdd(nil) } label: {
+                        Button(action: addToLibrary) {
                             Image(systemName: "plus").frame(minWidth: 44, minHeight: 44)
                         }
                         .accessibilityLabel("Add to Library")
                         Button {
+                            finishLaunchReveal()
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                                 isSearchVisible.toggle()
                                 if !isSearchVisible { searchText = "" }
@@ -205,8 +310,33 @@ struct LibraryView: View {
                 Button("OK") { deletionError = nil }
             } message: { Text(deletionError ?? "") }
             .onAppear {
+                let trace = StabilityTrace.begin("StartupLibraryMaintenance")
+                defer { StabilityTrace.end("StartupLibraryMaintenance", trace) }
+                for document in documents { document.progress = document.readingProgress }
+                try? modelContext.save()
                 autoPurge()
                 checkSharedItems()
+                if launchRevealPhase == .unresolved { launchRevealPhase = .ready }
+                resolveLaunchReveal()
+            }
+            .onChange(of: scenePhase) { old, new in
+                if new == .active {
+                    resolveLaunchReveal()
+                } else if old == .active || new == .background {
+                    finishLaunchReveal()
+                }
+            }
+            .onChange(of: reduceMotion) { if reduceMotion { finishLaunchReveal() } }
+            .onChange(of: isGenuinelyEmpty) { finishLaunchReveal() }
+            .onDisappear { finishLaunchReveal() }
+            .onChange(of: sharedImportsInFlight.isEmpty) {
+                if !sharedImportsInFlight.isEmpty { finishLaunchReveal() }
+            }
+            .onChange(of: showingSharedImportError) {
+                if showingSharedImportError { finishLaunchReveal() }
+            }
+            .onChange(of: playbackEngine.presentedPlayerDocument?.id) {
+                if playbackEngine.presentedPlayerDocument != nil { finishLaunchReveal() }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
                 checkSharedItems()
@@ -380,7 +510,7 @@ struct LibraryRowView: View {
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     HStack(spacing: 4) {
-                        Text("\(Int(doc.progress * 100))%")
+                        Text("\(Int(doc.readingProgress * 100))%")
                         Text("•")
                         Text(doc.dateAdded.formatted(.relative(presentation: .numeric)))
                         Text("•")

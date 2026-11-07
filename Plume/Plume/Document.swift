@@ -71,6 +71,10 @@ public final class Document {
     public var deletedAt: Date?
     public var wordCount: Int
     public var lastReadCharIndex: Int = 0
+
+    public var readingProgress: Double {
+        PlaybackSourceProgress.fraction(offset: lastReadCharIndex, length: bodyText.utf16.count)
+    }
     
     public init(
         id: UUID = UUID(),

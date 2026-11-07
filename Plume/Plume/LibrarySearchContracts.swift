@@ -8,8 +8,8 @@ enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
     nonisolated func matches(progress: Double) -> Bool {
         switch self {
         case .all: true
-        case .inProgress: progress > 0 && progress < 0.99
-        case .finished: progress >= 0.99
+        case .inProgress: progress > 0 && progress < 1
+        case .finished: progress >= 1
         }
     }
 }

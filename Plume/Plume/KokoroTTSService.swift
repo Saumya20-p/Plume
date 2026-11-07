@@ -5,6 +5,12 @@ public struct AudioChunk {
     public let timestamps: [WordTimestamp]
 }
 
+enum AudioGenerationOutcome {
+    case audio(AudioChunk)
+    case nonSpeech(DocumentSegmentID)
+    case endOfDocument
+}
+
 import AVFoundation
 import MLX
 import MLXNN
@@ -17,114 +23,17 @@ import os
 
 import NaturalLanguage
 
-private struct KokoroGenerationQueue {
-    static let shared = DispatchQueue(label: "com.plume.kokoro.generation", qos: .userInitiated)
-}
-
-final class EngineBackgroundState: @unchecked Sendable {
-    private let condition = NSCondition()
-    nonisolated(unsafe) private var paused = false
-    nonisolated(unsafe) private var executing = false
-    private var continuations: [CheckedContinuation<Void, Error>] = []
-    
-    nonisolated init() {}
-    
-    nonisolated var isPaused: Bool {
-        get { condition.lock(); defer { condition.unlock() }; return paused }
-        set { 
-            condition.lock()
-            paused = newValue
-            let pending = continuations
-            if !paused {
-                continuations.removeAll()
-            }
-            condition.unlock()
-            if !paused {
-                for cont in pending {
-                    cont.resume()
-                }
-            }
-        }
-    }
-    
-    nonisolated var isExecuting: Bool {
-        get { condition.lock(); defer { condition.unlock() }; return executing }
-    }
-    
-    nonisolated func cancelWaiters() {
-        condition.lock()
-        let pending = continuations
-        continuations.removeAll()
-        condition.unlock()
-        for cont in pending {
-            cont.resume(throwing: CancellationError())
-        }
-    }
-    
-    nonisolated func waitToStartExecuting() async throws {
-        if tryStartExecuting() { return }
-        try Task.checkCancellation()
-        
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                condition.lock()
-                if !paused {
-                    condition.unlock()
-                    cont.resume()
-                } else {
-                    continuations.append(cont)
-                    condition.unlock()
-                }
-            }
-        } onCancel: {
-            // Signal cancellation
-            self.cancelWaiters()
-        }
-        
-        try await waitToStartExecuting()
-    }
-    
-    nonisolated func tryStartExecuting() -> Bool {
-        condition.lock()
-        defer { condition.unlock() }
-        if paused {
-            return false
-        }
-        executing = true
-        return true
-    }
-    
-    nonisolated func stopExecuting() {
-        condition.lock()
-        executing = false
-        condition.broadcast()
-        condition.unlock()
-    }
-
-    nonisolated func waitForIdle(timeoutSeconds: TimeInterval) -> Bool {
-        condition.lock()
-        defer { condition.unlock() }
-        let limit = Date().addingTimeInterval(timeoutSeconds)
-        while executing {
-            if Date() > limit { return false }
-            condition.wait(until: limit) 
-        }
-        return true
-    }
-}
-
 actor KokoroEngineActor {
-    nonisolated private let tts: KokoroTTS
+    private let tts: KokoroTTS
 
     private let language: KokoroSwift.Language
     
-    // Semaphore is no longer needed since actor isolation guarantees serial execution
+    // GPU admission also serializes work across actor suspension points.
     
-    nonisolated let backgroundState = EngineBackgroundState()
+    nonisolated let backgroundState = EngineBackgroundState.shared
     
     var isGenerating: Bool = false
     
-    var isCancelled: Bool = false
     
     func waitForIdle() {
         // Explicitly synchronize the GPU stream to ensure no Metal command buffers
@@ -139,18 +48,17 @@ actor KokoroEngineActor {
         waitForIdle()
     }
     
-    func resumeFromBackground() {
-        backgroundState.isPaused = false
+    func resumeFromBackground() async {
+        if await MainActor.run(body: { PlaybackLifecycle.shared.phase == .active }) {
+            backgroundState.isPaused = false
+        }
     }
-    
-    func setBackgroundPaused(_ paused: Bool) {
-        backgroundState.isPaused = paused
+
+    func setBackgroundPaused(_ paused: Bool) async {
+        if paused { backgroundState.isPaused = true }
+        else { await resumeFromBackground() }
     }
-    
-    func setCancelled(_ cancelled: Bool) {
-        self.isCancelled = cancelled
-    }
-    
+
     let voicesArrays: [String: MLXArray]
     
     init(modelPath: URL, voicesPath: URL, language: KokoroSwift.Language) throws {
@@ -171,7 +79,10 @@ actor KokoroEngineActor {
         return embedding
     }
     
-    func generateAudio(text: String) throws -> [Float] {
+    func generateAudio(text: String) async throws -> [Float] {
+        let lease = try await backgroundState.acquire()
+        defer { backgroundState.release(lease) }
+        try Task.checkCancellation()
         let voiceEmbedding = try getPreferredVoiceEmbedding()
         let result = try tts.generateAudio(voice: voiceEmbedding, language: language, text: text)
         return result.0
@@ -192,10 +103,11 @@ actor KokoroEngineActor {
         
         let trimmedText = chunkText.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("m4a")
+        let tempURL = destinationURL.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
         
         if trimmedText.isEmpty {
-            return AudioChunk(identity: identity, fileURL: destinationURL, duration: 0, timestamps: [])
+            throw CancellationError()
         }
         
         let trimmedRange = chunkText.range(of: trimmedText)!
@@ -207,19 +119,17 @@ actor KokoroEngineActor {
         
         let set = CharacterSet.letters.union(.decimalDigits)
         guard normalizedText.rangeOfCharacter(from: set) != nil else {
-            return AudioChunk(identity: identity, fileURL: destinationURL, duration: 0, timestamps: [])
+            throw CancellationError()
         }
         
         // Wait efficiently before dispatching to Metal to avoid background SIGABRT
-        try await backgroundState.waitToStartExecuting()
+        let lease = try await backgroundState.acquire()
         
         defer {
-            backgroundState.stopExecuting()
+            backgroundState.release(lease)
         }
         
-        if self.isCancelled {
-            throw NSError(domain: "KokoroTTS", code: 6, userInfo: [NSLocalizedDescriptionKey: "Audio generation cancelled."])
-        }
+        try Task.checkCancellation()
         
         var chunkDuration: TimeInterval = 0
         var chunkTimestamps: [WordTimestamp] = []
@@ -228,33 +138,16 @@ actor KokoroEngineActor {
         let voice = try voiceEmbedding(identifier: voiceIdentifier)
         let lang = self.language
         
-        var result: ([Float], [MToken]?)?
-        var attempt = 0
-        while attempt < 3 {
-            do {
-                result = try await withCheckedThrowingContinuation { continuation in
-                    KokoroGenerationQueue.shared.async {
-                        do {
-                            let res = try ttsEngine.generateAudio(voice: voice, language: lang, text: normalizedText)
-                            continuation.resume(returning: res)
-                        } catch {
-                            continuation.resume(throwing: error)
-                        }
-                    }
-                }
-                break
-            } catch {
-                attempt += 1
-                if attempt >= 3 {
-                    throw error
-                }
-            }
-        }
-        
+        // This explicit actor executor performs inference synchronously under
+        // the GPU lease; no non-Sendable model/embedding escapes to a queue.
+        let result: ([Float], [MToken]?)
+        do { result = try ttsEngine.generateAudio(voice: voice, language: lang, text: normalizedText) }
+        catch { throw AudioPreparationError(stage: "inference", underlying: error) }
+        try Task.checkCancellation()
+
+        do {
         try autoreleasepool {
-            guard let finalResult = result else { 
-                throw NSError(domain: "KokoroTTS", code: 7, userInfo: [NSLocalizedDescriptionKey: "Failed to generate audio"])
-            }
+            let finalResult = result
             let audioFloats = finalResult.0
             
             if let tokens = finalResult.1 {
@@ -317,6 +210,7 @@ actor KokoroEngineActor {
                 UnsafeMutableRawPointer(channels[0]).copyMemory(from: UnsafeRawPointer(baseAddress), byteCount: ptr.count * MemoryLayout<Float>.stride)
             }
             
+            try Task.checkCancellation()
             var audioFile: AVAudioFile? = try AVAudioFile(forWriting: tempURL, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
             try audioFile?.write(from: buffer)
             
@@ -324,14 +218,15 @@ actor KokoroEngineActor {
             chunkDuration = TimeInterval(trimmedFloats.count) / sampleRate
             
             audioFile = nil
-            if FileManager.default.fileExists(atPath: destinationURL.path) {
-                try? FileManager.default.removeItem(at: destinationURL)
-            }
+            try Task.checkCancellation()
             try FileManager.default.moveItem(at: tempURL, to: destinationURL)
             
             MLX.Memory.clearCache()
         }
         
+        } catch is CancellationError { throw CancellationError() }
+        catch { throw AudioPreparationError(stage: "audio encoding/publication", underlying: error) }
+
         return AudioChunk(
             identity: identity,
             fileURL: destinationURL,
@@ -340,7 +235,6 @@ actor KokoroEngineActor {
         )
     }
     func synthesizeToFile(text: String, fileURL: URL, progress: @Sendable (Int, Int) -> Void) async throws -> [WordTimestamp] {
-        isCancelled = false
         // NOTE: This method uses its own sentence merging (350-char limit) which produces
         // different chunk counts than TextSegmenter.segment(). Do not correlate chunk indices
         // from this path with the streaming path (AudioChunkGenerator).
@@ -441,12 +335,15 @@ actor KokoroEngineActor {
         for (index, chunk) in chunks.enumerated() {
             Log.tts.info("Generating chunk \(index + 1)/\(chunks.count)...")
             progress(index + 1, chunks.count)
-            if isCancelled || Task.isCancelled {
+            if Task.isCancelled {
                 audioFile = nil
                 throw NSError(domain: "KokoroTTS", code: 6, userInfo: [NSLocalizedDescriptionKey: "Audio generation cancelled."])
             }
-            guard !chunk.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            guard PlaybackSourceProgress.hasSpeech(chunk.text) else { continue }
             
+            let lease = try await backgroundState.acquire()
+            defer { backgroundState.release(lease) }
+            try Task.checkCancellation()
             try autoreleasepool {
                 let result = try tts.generateAudio(voice: voice, language: language, text: chunk.text)
                 let audioFloats = result.0
@@ -598,6 +495,18 @@ public class AudioChunkGenerator {
         ]
     }
     
+    func nextResult() async throws -> AudioGenerationOutcome {
+        try Task.checkCancellation()
+        guard currentIndex < chunks.count else { return .endOfDocument }
+        let chunk = chunks[currentIndex]
+        guard PlaybackSourceProgress.hasSpeech(chunk.text) else {
+            currentIndex += 1
+            return .nonSpeech(chunk.id)
+        }
+        guard let audio = try await nextChunk() else { return .endOfDocument }
+        return .audio(audio)
+    }
+
     public func nextChunk() async throws -> AudioChunk? {
         let writer = try AudioCacheStore.shared.beginWriting(documentID: session.documentID)
         defer { AudioCacheStore.shared.finishWriting(writer) }
@@ -607,13 +516,14 @@ public class AudioChunkGenerator {
         let indexForChunk = currentIndex
         currentIndex += 1
         
-        guard !chunk.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard PlaybackSourceProgress.hasSpeech(chunk.text) else {
             return try await nextChunk() // skip empty and recurse
         }
         
         let identity = GeneratedAudioChunkIdentity(session: session, segmentID: chunk.id)
-        let destinationURL = cacheDirectory
-            .appendingPathComponent("chunk_\(indexForChunk)_\(voiceIdentifier).m4a")
+        let runDirectory = cacheDirectory.appendingPathComponent(session.id.uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: runDirectory, withIntermediateDirectories: true)
+        let destinationURL = runDirectory.appendingPathComponent("chunk_\(indexForChunk)_\(voiceIdentifier).m4a")
         let resultChunk = try await engineActor.generateSingleChunk(
             identity: identity,
             voiceIdentifier: voiceIdentifier,
@@ -626,6 +536,7 @@ public class AudioChunkGenerator {
             destinationURL: destinationURL
         )
         
+        try Task.checkCancellation()
         self.currentTimeOffset += resultChunk.duration
         return resultChunk
     }
@@ -646,7 +557,8 @@ class KokoroTTSService: ObservableObject {
     /// Call from background notifications to ensure no Metal work is pending
     /// before iOS revokes background GPU access. Safe to call from main thread.
     nonisolated func waitForGPUIdleSync() {
-        guard let state = getEngineActorSync()?.backgroundState else { return }
+        let state = EngineBackgroundState.shared
+        guard state.isExecuting || getEngineActorSync() != nil else { return }
         
         // If not actively generating on the GPU, return immediately
         guard state.isExecuting else {
@@ -654,9 +566,12 @@ class KokoroTTSService: ObservableObject {
             return
         }
         
-        let finished = state.waitForIdle(timeoutSeconds: 2.0)
-        if !finished {
-            Log.tts.error("Warning: MLX evaluation did not finish within 2.0s limit for background transition.")
+        if !state.waitForIdle(timeoutSeconds: 2.0) {
+            Log.tts.error("GPU drain exceeded two seconds; admission remains closed until the current lease finishes.")
+            // A stream synchronization alone cannot prevent a CPU inference
+            // loop from submitting later commands. Never return while a lease
+            // can still encode GPU work, even after the diagnostic threshold.
+            while !state.waitForIdle(timeoutSeconds: 0.1) { }
         }
         
         // Now that no new commands are being submitted, drain all in-flight Metal command buffers
@@ -678,19 +593,10 @@ class KokoroTTSService: ObservableObject {
     // Hardcoded to English for now
     let language: KokoroSwift.Language = .enUS
     
-    private init() {
-        
-        // Background handling is centralized in AudioGenerationManager, which
-        // pauses generation (isPausedForBackground) on willResignActive and
-        // resumes on didBecomeActive. We do NOT cancel here — cancelling would
-        // set isCancelled on the engine actor with no corresponding reset,
-        // making generation unresumable after a background round-trip.
-        // Explicit user-initiated cancellation goes through
-        // AudioGenerationManager.cancelCurrentGeneration() instead.
-    }
+    private init() { _ = PlaybackLifecycle.shared }
     
     func cancelGeneration() async {
-        await engineActor?.setCancelled(true)
+        // Individual generation/preparation tasks own cooperative cancellation.
     }
     
     func generateAllPreviews() async {
@@ -727,7 +633,7 @@ class KokoroTTSService: ObservableObject {
     }
     
     func resetCancellation() async {
-        await engineActor?.setCancelled(false)
+        // Kept for compatibility; no global cancellation state is reset.
     }
     
     func loadModel() async throws {
@@ -740,7 +646,7 @@ class KokoroTTSService: ObservableObject {
         
         let loadingTask = Task { @MainActor in
             // Enforce a strict 64MB GPU cache limit. Without this, iOS will kill the app (OOM)
-            MLX.Memory.cacheLimit = 64 * 1024 * 1024
+            // Model initialization uses the same GPU lease as inference.
             
             let bundle = Bundle.main
             
@@ -754,7 +660,12 @@ class KokoroTTSService: ObservableObject {
             
             // Initialize everything inside a detached background task to prevent freezing the Main Thread
             self.engineActor = try await Task.detached { [language = self.language] in
-                try KokoroEngineActor(modelPath: modelPath, voicesPath: voicesPath, language: language)
+                let gate = EngineBackgroundState.shared
+                let lease = try await gate.acquire()
+                defer { gate.release(lease) }
+                try Task.checkCancellation()
+                MLX.Memory.cacheLimit = 64 * 1024 * 1024
+                return try KokoroEngineActor(modelPath: modelPath, voicesPath: voicesPath, language: language)
             }.value
             
             self.isModelLoaded = true
@@ -811,7 +722,7 @@ class KokoroTTSService: ObservableObject {
         }
         
         // Reset cancellation state from any previous session before starting
-        await engineActor.setCancelled(false)
+        try Task.checkCancellation()
         
         return try AudioChunkGenerator(
             document: document,
@@ -927,7 +838,7 @@ import Foundation
 import AVFoundation
 
 extension KokoroEngineActor {
-    public func generateAllPreviews() throws {
+    public func generateAllPreviews() async throws {
         let text = "Hi, I am ready to read."
         let sampleRate = Double(KokoroTTS.Constants.samplingRate)
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else { return }
@@ -950,7 +861,9 @@ extension KokoroEngineActor {
                 continue
             }
             
-            print("Generating preview for \(voiceId)...")
+            let lease = try await backgroundState.acquire()
+            defer { backgroundState.release(lease) }
+            try Task.checkCancellation()
             let result = try tts.generateAudio(voice: embedding, language: language, text: text)
             let audioFloats = result.0
             
@@ -971,7 +884,10 @@ extension KokoroEngineActor {
         print("Done generating all previews in: \(docsDir.path)")
     }
     
-    public func generatePreview(for voiceId: String, outputURL: URL) throws {
+    public func generatePreview(for voiceId: String, outputURL: URL) async throws {
+        let lease = try await backgroundState.acquire()
+        defer { backgroundState.release(lease) }
+        try Task.checkCancellation()
         let text = "Hi, I am ready to read."
         let set = CharacterSet.letters.union(.decimalDigits)
         guard text.rangeOfCharacter(from: set) != nil else {

@@ -149,26 +149,18 @@ struct ListeningStatisticsView: View {
             let totalTime = sessions.reduce(0) { $0 + $1.secondsListened }
             let totalWords = sessions.reduce(0) { $0 + Double($1.wordsListened) }
             
-            // Time saved = time listened at 1.0x - actual time listened
-            // Or: secondsListened * (playbackSpeed - 1.0)
-            let timeSaved = sessions.reduce(0.0) { total, session in
-                if session.playbackSpeed > 1.0 {
-                    return total + (session.secondsListened * (session.playbackSpeed - 1.0))
-                }
-                return total
-            }
-            
+            let measured = sessions.filter { $0.measurementVersion == 2 }
+            let measuredTime = measured.reduce(0) { $0 + $1.secondsListened }
+            let measuredWords = measured.reduce(0) { $0 + $1.wordsListened }
+            let wpm = ListeningMetrics.wpm(words: measuredWords, seconds: measuredTime)
             let distinctChapters = Set(sessions.map { $0.documentId }).count
-            let avgSpeed = sessions.isEmpty ? 1.0 : (sessions.reduce(0) { $0 + $1.playbackSpeed } / Double(sessions.count))
-            
+
             VStack(spacing: 0) {
                 statRow(title: "Time Listened", value: formatDuration(totalTime))
                 Divider().padding(.leading)
                 statRow(title: "Words Listened", value: formatNumber(Int(totalWords)))
                 Divider().padding(.leading)
-                statRow(title: "Time Saved", value: formatDuration(timeSaved))
-                Divider().padding(.leading)
-                statRow(title: "Average Speed", value: String(format: "%.2fx", avgSpeed))
+                statRow(title: "Average Listening WPM", value: wpm.map { String(format: "%.0f WPM", $0) } ?? "—")
                 Divider().padding(.leading)
                 statRow(title: "Chapters Listened", value: "\(distinctChapters)")
             }

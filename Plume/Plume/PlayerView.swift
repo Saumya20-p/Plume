@@ -12,6 +12,7 @@ struct PlayerView: View, Equatable {
     @ObservedObject private var progress = PlaybackProgress.shared
     @ObservedObject private var generationManager = AudioGenerationManager.shared
     
+    @AppStorage("keepScreenAwakeWhileListening") private var keepScreenAwake = false
     @State private var showAppearanceSettings = false
     @State private var showQueueSheet = false
     @State private var isExplicitlyDismissing = false
@@ -59,6 +60,17 @@ struct PlayerView: View, Equatable {
         if UIExperimentFixture.autoHideEnabled && ProcessInfo.processInfo.arguments.contains("--ui-experiment-voiceover") { return true }
         #endif
         return voiceOverEnabled || UIAccessibility.isVoiceOverRunning
+    }
+
+    private var awakeContext: ReaderAwakeContext {
+        ReaderAwakeContext(enabled: keepScreenAwake,
+            visible: readerVisible && playbackEngine.currentDocument?.id == document.id,
+            active: scenePhase == .active,
+            intended: playbackEngine.coordinator.desiredPlayIntent == .playing,
+            advancing: playbackEngine.actualPlaybackActive,
+            preparing: playbackEngine.isPreparingCurrentPlayback && generationManager.isGeneratingAny,
+            blocked: playbackEngine.coordinator.contract?.lifecycle != .active || playbackEngine.generationFailed ||
+                showQueueSheet || showAppearanceSettings || controlsSheetPresented || generationManager.lastError != nil)
     }
 
     private var visibilityContext: ReaderControlsContext {
@@ -291,6 +303,7 @@ struct PlayerView: View, Equatable {
                 .modifier(UIExperimentEnvironment())
                 #endif
         }
+        .onChange(of: awakeContext, initial: true) { _, context in ReaderIdleTimer.shared.update(context) }
         .onChange(of: visibilityContext, initial: true) { _, context in controlsVisibility.update(context) }
         .onChange(of: dynamicTypeSize) { readerInteraction() }
         .onChange(of: scenePhase) {
@@ -324,7 +337,8 @@ struct PlayerView: View, Equatable {
             readerVisible = true
             playbackEngine.isPlayerViewPresented = true
             
-            if playbackEngine.currentDocument?.id != document.id {
+            let openingNewDocument = playbackEngine.currentDocument?.id != document.id
+            if openingNewDocument {
                 // Immediately cut off the old audio and stop generating when switching chapters
                 playbackEngine.pause()
                 generationManager.cancelCurrentGeneration()
@@ -343,7 +357,7 @@ struct PlayerView: View, Equatable {
                 visualMarkersAdvancing = true
             }
             #endif
-            if automaticallyStartsPlayback {
+            if openingNewDocument && document.readingProgress < 1 && automaticallyStartsPlayback {
                 if !playbackEngine.isPlaying {
                     playbackEngine.play()
                 }
@@ -351,6 +365,7 @@ struct PlayerView: View, Equatable {
         }
         .onDisappear {
             readerVisible = false
+            ReaderIdleTimer.shared.release()
             controlsVisibility.stop()
             heldControls.removeAll()
             playbackEngine.isPlayerViewPresented = false
@@ -369,6 +384,7 @@ struct PlayerView: View, Equatable {
                 set: { if !$0 { generationManager.lastError = nil } }
             ),
             actions: {
+                Button("Retry") { playbackEngine.play() }
                 Button("OK", role: .cancel) {}
             },
             message: {
@@ -406,8 +422,7 @@ struct PlayerControlsView: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     private var isGeneratingAudio: Bool {
-        !playbackEngine.isAppleActive && generationManager.generatingDocumentIDs.contains(document.id) &&
-            playbackEngine.chunks.isEmpty && document.audioFileURL == nil
+        playbackEngine.isPreparingCurrentPlayback
     }
 
     private func formatTime(_ time: TimeInterval) -> String {
@@ -483,27 +498,12 @@ struct PlayerControlsView: View {
                     #if DEBUG
                     defer { UIExperimentFixture.recordPlaybackDiagnostics() }
                     #endif
-                    let isGenerating = !playbackEngine.isAppleActive && generationManager.generatingDocumentIDs.contains(document.id) && playbackEngine.chunks.isEmpty && document.audioFileURL == nil
-                    
-                    if isGenerating {
-                        generationManager.cancelCurrentGeneration()
+                    if playbackEngine.coordinator.desiredPlayIntent == .playing {
                         playbackEngine.pause()
-                    } else if !playbackEngine.isAppleActive && playbackEngine.chunks.isEmpty && document.audioFileURL == nil && !generationManager.generatingDocumentIDs.contains(document.id) {
-                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                            let resumeIndex = PlaybackProgress.shared.currentWord?.rangeLocation ?? document.lastReadCharIndex
-                            if resumeIndex > 0 {
-                                playbackEngine.seek(toCharIndex: resumeIndex)
-                                playbackEngine.play()
-                            } else {
-                                generationManager.generate(document: document, playbackEngine: playbackEngine)
-                                playbackEngine.play()
-                            }
-                        }
-                    } else {
-                        playbackEngine.togglePlayPause()
-                    }
+                        if playbackEngine.chunks.isEmpty { generationManager.cancelCurrentGeneration() }
+                    } else { playbackEngine.play() }
                 }) {
-                    let isGenerating = !playbackEngine.isAppleActive && generationManager.generatingDocumentIDs.contains(document.id) && playbackEngine.chunks.isEmpty && document.audioFileURL == nil
+                    let isGenerating = playbackEngine.isPreparingCurrentPlayback
                     let showPauseIcon = playbackEngine.isPlaying || isGenerating
                     
                     Image(systemName: showPauseIcon ? "pause.fill" : "play.fill")
@@ -597,8 +597,8 @@ struct PlayerControlsView: View {
             currentTime: $progress.currentTime,
             dockHeight: dockHeight,
             generatedDuration: playbackEngine.duration,
-            estimatedDuration: document.estimatedDuration,
-            isFullyGenerated: document.audioFileURL != nil,
+            estimatedDuration: playbackEngine.displayTotalDuration,
+            isFullyGenerated: playbackEngine.exactTotalDuration != nil,
             onInteraction: onInteraction,
             onScrubbingChanged: { onHoldChanged("scrubber", $0) },
             onSeek: { playbackEngine.seek(to: $0) }
@@ -608,7 +608,7 @@ struct PlayerControlsView: View {
     private var playbackTime: some View {
         let speed = Double(playbackEngine.playbackRate)
         let current = formatTime(progress.currentTime / speed)
-        let total = document.audioFileURL != nil ? formatTime(playbackEngine.duration / speed) : "~\(formatTime(document.estimatedDuration / speed))"
+        let total = playbackEngine.exactTotalDuration.map { formatTime($0 / speed) } ?? "~\(formatTime(playbackEngine.displayTotalDuration / speed))"
         return Text("\(current) / \(total)")
             .font(.caption2.monospacedDigit())
             .lineLimit(1)

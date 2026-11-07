@@ -8,21 +8,16 @@ import UIKit
 
 extension AudioPlaybackEngine {
     func checkKokoroBufferUnderrun() {
-        guard pendingSeek == nil, (isPlaying || coordinator.contract?.desiredPlayIntent == .playing), !coordinator.isAppleActive, currentDocument != nil else { return }
-        
-        let runway = bufferedTime - currentTime
-        let itemsCount = queuePlayer?.items().count ?? 0
-        let isStalled = queuePlayer?.timeControlStatus == .waitingToPlayAtSpecifiedRate
-        let hasDepletedRunway = !chunks.isEmpty && (itemsCount == 0 || (runway <= 0.1 && isStalled))
-        
-        if hasDepletedRunway && !hasReachedDocumentEnd {
-            Log.audio.warning("Kokoro buffer underrun detected (runway: \(runway, privacy: .public)s, items: \(itemsCount)). Triggering fallback to Apple Speech.")
-            triggerFallbackToAppleSpeech(reason: "Kokoro audio buffer underrun (runway: \(runway)s)")
-        }
+        guard pendingSeek == nil, coordinator.desiredPlayIntent == .playing,
+              !coordinator.isAppleActive, currentDocument != nil else { return }
+        // End notifications own completion. Do not race them at the final item.
+        guard activeQueueItems.isEmpty else { return }
+        if generationEOF { completeLogicalPlayback() }
+        else { reconcilePlayback(explicit: false) }
     }
 
     func triggerSpeculativeHandbackPreparation(for doc: Document) {
-        guard pendingSeek == nil, coordinator.isFallbackActive else { return }
+        guard pendingSeek == nil, coordinator.isFallbackActive, applicationPhase == .active, coordinator.desiredPlayIntent == .playing else { return }
         
         let targetSegmentIndex = coordinator.currentOrUpcomingSegmentIndex
         guard targetSegmentIndex < coordinator.segmentsCount else {
@@ -31,7 +26,7 @@ extension AudioPlaybackEngine {
         }
 
         Log.audio.info("Starting speculative preparation for document \(doc.id) from segment \(targetSegmentIndex).")
-        AudioGenerationManager.shared.startSpeculativePreparation(
+        generationManager.startSpeculativePreparation(
             document: doc,
             playbackEngine: self,
             startChunkIndex: targetSegmentIndex
@@ -75,7 +70,8 @@ extension AudioPlaybackEngine {
         self.duration = runningOffset
 
         // 5. Resume playback if desired
-        let shouldPlay = self.isPlaying || (self.coordinator.contract?.desiredPlayIntent == .playing)
+        let shouldPlay = self.coordinator.desiredPlayIntent == .playing
+        generationEOF = false
         isGenerationActive = true
         if shouldPlay {
             isPlaying = true
@@ -90,10 +86,10 @@ extension AudioPlaybackEngine {
         // 6. Resume continuous Kokoro generation for remaining chunks
         let nextChunkIndex = (chunks.last?.identity.segmentID.ordinal ?? 0) + 1
         Log.audio.info("Resuming continuous Kokoro generation from segment \(nextChunkIndex).")
-        AudioGenerationManager.shared.generate(
+        generationManager.generate(
             document: doc,
             playbackEngine: self,
-            startChunkIndex: nextChunkIndex
+            startChunkIndex: nextChunkIndex, preservingPlaybackSession: true
         )
     }
 

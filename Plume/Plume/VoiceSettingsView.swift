@@ -230,6 +230,7 @@ struct VoiceSettingsView: View {
         var id: String { rawValue }
     }
     
+    @AppStorage("automaticAppleFallback") private var automaticFallback = true
     @State private var selectedTab: VoiceRoleTab = .primary
     @State private var showRestartConfirmation: Bool = false
     @State private var restartSuccessNotice: Bool = false
@@ -375,6 +376,9 @@ struct VoiceSettingsView: View {
             header: Text("Fallback Behavior"),
             footer: Text("Used when your main voice can’t continue. Choose an Enhanced or Premium Apple voice.")
         ) {
+            Toggle("Allow Automatic Apple Speech Fallback", isOn: $automaticFallback)
+            Text("When disabled, Kokoro plays buffered audio, then waits until it can safely generate again. Choosing Apple Speech as your primary voice is unaffected.")
+                .font(.footnote).foregroundStyle(.secondary)
             // System Default / Automatic
             Button { selectFallback(nil) } label: {
               HStack {

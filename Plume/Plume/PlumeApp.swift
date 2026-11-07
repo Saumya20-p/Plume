@@ -10,10 +10,9 @@ import SwiftData
 
 @main
 struct PlumeApp: App {
-    #if DEBUG
-    @State private var didLoadUIFixture = false
-    #endif
     var sharedModelContainer: ModelContainer = {
+        let trace = StabilityTrace.begin("StartupModelContainer")
+        defer { StabilityTrace.end("StartupModelContainer", trace) }
         let schema = Schema([
             Document.self,
             ListeningSession.self,
@@ -23,7 +22,9 @@ struct PlumeApp: App {
         // if available, or falls back gracefully on free tier.
         #if DEBUG
         if UIExperimentFixture.enabled {
-            return try! ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)])
+            let container = try! ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)])
+            UIExperimentFixture.populate(container)
+            return container
         }
         #endif
         let storeURL = StorageManager.shared.swiftDataURL.appendingPathComponent("Plume.sqlite")
@@ -49,12 +50,6 @@ struct PlumeApp: App {
                 #endif
                 .onAppear {
                     PlaybackCoordinator.shared.configure(container: sharedModelContainer)
-                    #if DEBUG
-                    if !didLoadUIFixture {
-                        didLoadUIFixture = true
-                        UIExperimentFixture.populate(sharedModelContainer)
-                    }
-                    #endif
                 }
         }
         .modelContainer(sharedModelContainer)

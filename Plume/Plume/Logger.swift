@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-enum Log {
+nonisolated enum Log {
     private static let subsystem = Bundle.main.bundleIdentifier ?? "app.plume"
     
     static let audio = Logger(subsystem: subsystem, category: "Audio")
